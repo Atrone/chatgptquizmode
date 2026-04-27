@@ -1,0 +1,95 @@
+.mcq-radio-extension-hidden-answer {
+  display: none !important;
+}
+
+.mcq-radio-extension-hidden-original {
+  display: none !important;
+}
+
+.mcq-radio-extension-quiz {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 0.75rem;
+  margin: 0.9rem 0;
+  padding: 0.85rem;
+}
+
+.mcq-radio-extension-title {
+  font-size: 0.85rem;
+  font-weight: 650;
+  margin-bottom: 0.7rem;
+  opacity: 0.78;
+}
+
+.mcq-radio-extension-question {
+  margin-top: 0.9rem;
+}
+
+.mcq-radio-extension-question:first-of-type {
+  margin-top: 0;
+}
+
+.mcq-radio-extension-prompt {
+  font-weight: 600;
+  margin-bottom: 0.45rem;
+}
+
+.mcq-radio-extension-sata-hint {
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+  opacity: 0.72;
+}
+
+.mcq-radio-extension-option {
+  align-items: flex-start;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  display: flex;
+  gap: 0.55rem;
+  line-height: 1.45;
+  margin: 0.25rem 0;
+  padding: 0.35rem 0.4rem;
+}
+
+.mcq-radio-extension-option:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mcq-radio-extension-option input {
+  margin-top: 0.18rem;
+}
+
+.mcq-radio-extension-option-letter {
+  font-weight: 650;
+  min-width: 1.6rem;
+}
+
+.mcq-radio-extension-actions {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.mcq-radio-extension-score-button {
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  padding: 0.4rem 0.85rem;
+}
+
+.mcq-radio-extension-score-button:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mcq-radio-extension-score-result {
+  font-size: 0.9rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.mcq-radio-extension-context {
+  display: none !important;
+}
