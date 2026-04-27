@@ -5,6 +5,7 @@
   const QUIZ_ATTRIBUTE = "data-mcq-radio-extension-quiz-id";
   const ORIGINAL_OUTPUT_ATTRIBUTE = "data-mcq-radio-extension-original-output";
   const CONTEXT_ELEMENT_ID = "mcq-radio-extension-conversation-context";
+  const STREAM_IDLE_DELAY_MS = 1200;
   const OPTION_PATTERN = /^([A-H])[\.\):\-]\s+(.+)$/i;
   const QUESTION_START_PATTERN = /^(?:question\s*)?(\d+)[\.\)]\s*(.+)$/i;
   const SATA_PATTERN = /\b(?:sata|select all that apply|choose all that apply|multiple response|multi-select|multiple select)\b/i;
@@ -18,6 +19,7 @@
   // Track parsed roots so rapid streaming mutations do not duplicate widgets.
   const processedRoots = new WeakSet();
   const processingRoots = new WeakSet();
+  const pendingProcessingTimers = new WeakMap();
 
   /**
    * Starts the extension once the ChatGPT page is ready enough to observe.
@@ -41,6 +43,9 @@
    * @param {MutationRecord[]} mutations - Browser mutation records from ChatGPT.
    */
   function handleMutations(mutations) {
+    // Collect roots first so one animation frame's mutations share one render delay.
+    const changedRoots = new Set();
+
     // Reset processed markers for edited assistant outputs that are still streaming.
     for (const mutation of mutations) {
       // Ignore mutations caused by the extension's own controls or context mirror.
@@ -52,12 +57,30 @@
       const target = mutation.target;
       const root = findAssistantRoot(target);
 
+      // Ignore page updates outside assistant message output.
+      if (!root) {
+        continue;
+      }
+
+      // Defer visible extension rendering until this output stops changing.
+      changedRoots.add(root);
+
       // Allow the next scan to rebuild a widget when ChatGPT changes a response.
-      if (root && root.hasAttribute(PROCESSED_ATTRIBUTE)) {
-        removeExistingQuiz(root);
+      if (root.hasAttribute(PROCESSED_ATTRIBUTE)) {
+        removeExistingQuiz(root, false);
         root.removeAttribute(PROCESSED_ATTRIBUTE);
         processedRoots.delete(root);
       }
+
+      // Once the partial text is recognizable as an MCQ, keep source output hidden.
+      if (hasRenderableMcqContent(root)) {
+        hideOriginalOutput(root, null);
+      }
+    }
+
+    // Restart the idle timer for every assistant output that changed.
+    for (const root of changedRoots) {
+      scheduleAssistantRootProcessing(root);
     }
 
     // Debounce through the browser event queue so related mutations settle.
@@ -73,8 +96,50 @@
 
     // Process each assistant output independently so choices are grouped by response.
     for (const root of assistantRoots) {
+      // Streaming roots are handled by their quiet-period timer instead.
+      if (pendingProcessingTimers.has(root)) {
+        continue;
+      }
+
       processAssistantRoot(root);
     }
+  }
+
+  /**
+   * Schedules assistant output processing after streaming mutations go quiet.
+   *
+   * @param {Element} root - Assistant message content root.
+   */
+  function scheduleAssistantRootProcessing(root) {
+    // Replace any previous timer so only the completed stream is rendered.
+    const existingTimer = pendingProcessingTimers.get(root);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+
+    // Process the final settled DOM after ChatGPT stops appending tokens.
+    const nextTimer = window.setTimeout(() => {
+      pendingProcessingTimers.delete(root);
+      processAssistantRoot(root);
+    }, STREAM_IDLE_DELAY_MS);
+
+    // Remember the active timer so scans skip partial streaming output.
+    pendingProcessingTimers.set(root, nextTimer);
+  }
+
+  /**
+   * Determines whether an assistant root currently contains renderable MCQ text.
+   *
+   * @param {Element} root - Assistant output root.
+   * @returns {boolean} True when the source output should be hidden while streaming.
+   */
+  function hasRenderableMcqContent(root) {
+    // Parse the current visible text without creating any extension UI.
+    const text = getVisibleText(root);
+    const questions = parseMultipleChoiceQuestions(text);
+
+    // Hide only after there is enough structure to avoid blanking normal replies.
+    return questions.length > 0;
   }
 
   /**
@@ -97,6 +162,7 @@
 
     // Mark non-MCQ outputs as processed to avoid repeated parsing.
     if (questions.length === 0) {
+      restoreOriginalOutput(root);
       root.setAttribute(PROCESSED_ATTRIBUTE, "true");
       processedRoots.add(root);
       processingRoots.delete(root);
@@ -551,13 +617,13 @@
    * Hides the original ChatGPT-rendered output after the generated quiz is ready.
    *
    * @param {Element} root - Assistant output root.
-   * @param {Element} visibleQuiz - Extension quiz that should remain visible.
+   * @param {Element | null} visibleQuiz - Extension quiz that should remain visible.
    */
   function hideOriginalOutput(root, visibleQuiz) {
     // Hide only direct original children so the appended quiz stays visible.
     for (const child of root.children) {
       // Skip the quiz UI and any other extension-owned elements.
-      if (child === visibleQuiz || child.closest(`.${EXTENSION_PREFIX}-quiz, .${EXTENSION_PREFIX}-context`)) {
+      if ((visibleQuiz && child === visibleQuiz) || child.closest(`.${EXTENSION_PREFIX}-quiz, .${EXTENSION_PREFIX}-context`)) {
         continue;
       }
 
@@ -1141,10 +1207,13 @@
    * Removes an existing quiz before reparsing a changed assistant output.
    *
    * @param {Element} root - Assistant output root.
+   * @param {boolean} [shouldRestoreOriginal=true] - Whether to reveal source output immediately.
    */
-  function removeExistingQuiz(root) {
-    // Show the original output again while the response is reparsed.
-    restoreOriginalOutput(root);
+  function removeExistingQuiz(root, shouldRestoreOriginal = true) {
+    // Reveal source output only for explicit cleanup after the final parse.
+    if (shouldRestoreOriginal) {
+      restoreOriginalOutput(root);
+    }
 
     // Find extension-owned quiz elements under this response.
     const quizzes = root.querySelectorAll(`.${EXTENSION_PREFIX}-quiz`);
