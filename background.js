@@ -105,7 +105,7 @@ async function getAccessState(extpay) {
   try {
     // Ask ExtensionPay for the account-backed paid and install status.
     const user = await extpay.getUser();
-    const installedAt = normalizeDate(user.installedAt) || fallbackInstalledAt;
+    const installedAt = getEarliestDate(normalizeDate(user.installedAt), fallbackInstalledAt);
     const trialRemainingMs = getTrialRemainingMs(installedAt);
 
     // Paid accounts should always get full access.
@@ -140,6 +140,20 @@ async function getAccessState(extpay) {
 function createExtPayClient() {
   // ExtensionPay recommends redeclaring the client inside MV3 callbacks.
   return ExtPay(EXTENSIONPAY_EXTENSION_ID);
+}
+
+/**
+ * Selects the earliest valid date so local install history cannot extend trials.
+ *
+ * @param {...(Date | null)} dates - Candidate install timestamps.
+ * @returns {Date} Earliest valid date.
+ */
+function getEarliestDate(...dates) {
+  // Remove invalid or unavailable dates before comparing timestamps.
+  const validDates = dates.filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+
+  // Return the oldest valid install timestamp.
+  return validDates.reduce((earliest, date) => (date.getTime() < earliest.getTime() ? date : earliest));
 }
 
 /**
