@@ -20,6 +20,15 @@
   opacity: 0.78;
 }
 
+.mcq-radio-extension-trial-notice {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-bottom: 0.7rem;
+  padding: 0.5rem 0.65rem;
+}
+
 .mcq-radio-extension-question {
   margin-top: 0.9rem;
 }
@@ -88,6 +97,52 @@
   font-size: 0.9rem;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.mcq-radio-extension-paywall-message {
+  line-height: 1.45;
+  margin: 0 0 0.8rem;
+}
+
+.mcq-radio-extension-paywall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mcq-radio-extension-paywall-button {
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  padding: 0.4rem 0.85rem;
+}
+
+.mcq-radio-extension-paywall-button:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mcq-radio-extension-paywall-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.mcq-radio-extension-paywall-button-primary {
+  background: currentColor;
+  color: Canvas;
+}
+
+.mcq-radio-extension-paywall-button-primary:hover:not(:disabled) {
+  opacity: 0.86;
+}
+
+.mcq-radio-extension-paywall-status {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-top: 0.65rem;
+  min-height: 1.2em;
+  opacity: 0.78;
 }
 
 .mcq-radio-extension-context {

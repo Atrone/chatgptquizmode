@@ -13,6 +13,7 @@ A small Manifest V3 Chrome extension that detects multiple-choice-question style
 - Adds a **Score** button that grades selected answers against parsed answer keys, including multi-answer SATA keys.
 - Stores selected answers with `chrome.storage.local`, scoped to the current conversation URL.
 - Mirrors the stored selections into a hidden page element named `mcq-radio-extension-conversation-context` so the current conversation page has a DOM-level context copy.
+- Allows a 24-hour trial after install, then requires a one-time $5 account unlock through ExtensionPay/Stripe.
 
 ## Load In Chrome
 
@@ -21,6 +22,19 @@ A small Manifest V3 Chrome extension that detects multiple-choice-question style
 3. Click **Load unpacked**.
 4. Select this folder.
 5. Open or refresh a ChatGPT conversation.
+
+## Payment Setup
+
+This extension uses [ExtensionPay](https://extensionpay.com/) for account-backed payment status and Stripe Checkout for the hosted payment page.
+
+1. Register the extension in ExtensionPay.
+2. Create a one-time plan for `$5.00 USD`.
+3. Set that plan's nickname to `lifetime`, or update `EXTENSIONPAY_PLAN_NICKNAME` in `background.js`.
+4. Update `EXTENSIONPAY_EXTENSION_ID` in `background.js` to match the ExtensionPay extension id.
+5. Enable Google Pay in Stripe payment methods where available, so eligible users see Google Pay in the hosted checkout.
+6. Enable ExtensionPay login/reactivation by email so paid users can unlock access across browser profiles or devices.
+
+The quiz controls render normally during the first 24 hours after install. After that, unpaid users see a paywall with **Pay $5**, **I already paid**, and **Retry status** actions.
 
 ## Example ChatGPT Output
 
@@ -55,3 +69,5 @@ The extension renders checkboxes and requires the exact selected set for the que
 ## Notes
 
 The extension stores selections per conversation path. It cannot directly add selected answers to ChatGPT's model-side memory or server-side conversation state, but it keeps them available to the active browser conversation through extension storage and a hidden DOM context element.
+
+Raw Google Pay is not run inside the ChatGPT content script. Google Pay is provided through Stripe Checkout on the hosted ExtensionPay payment page.

@@ -6,6 +6,7 @@
   const ORIGINAL_OUTPUT_ATTRIBUTE = "data-mcq-radio-extension-original-output";
   const CONTEXT_ELEMENT_ID = "mcq-radio-extension-conversation-context";
   const STREAM_IDLE_DELAY_MS = 1200;
+  const ACCESS_CACHE_DURATION_MS = 30000;
   const OPTION_PATTERN = /^([A-H])[\.\):\-]\s+(.+)$/i;
   const QUESTION_START_PATTERN = /^(?:question\s*)?(\d+)[\.\)]\s*(.+)$/i;
   const SATA_PATTERN = /\b(?:sata|select all that apply|choose all that apply|multiple response|multi-select|multiple select)\b/i;
@@ -20,6 +21,7 @@
   const processedRoots = new WeakSet();
   const processingRoots = new WeakSet();
   const pendingProcessingTimers = new WeakMap();
+  let accessStateCache = null;
 
   /**
    * Starts the extension once the ChatGPT page is ready enough to observe.
@@ -35,6 +37,10 @@
       subtree: true,
       characterData: true
     });
+
+    // Refresh gated outputs after users return from checkout or login tabs.
+    window.addEventListener("focus", refreshAccessGatedOutputs);
+    document.addEventListener("visibilitychange", refreshAccessGatedOutputs);
   }
 
   /**
@@ -172,10 +178,22 @@
     // Hide answer-key lines before adding selectable options.
     hideAnswerLines(root);
 
+    // Gate the quiz UI after parsing so normal non-MCQ replies stay untouched.
+    const accessState = await readAccessState(false);
+    if (isAccessLocked(accessState)) {
+      const paywall = buildPaywallElement(accessState);
+      root.appendChild(paywall);
+      hideOriginalOutput(root, paywall);
+      root.setAttribute(PROCESSED_ATTRIBUTE, "true");
+      processedRoots.add(root);
+      processingRoots.delete(root);
+      return;
+    }
+
     // Build a stable identifier from the conversation URL and response location.
     const quizId = createQuizId(root, questions);
     const savedSelections = await readSelections();
-    const quiz = buildQuizElement(quizId, questions, savedSelections);
+    const quiz = buildQuizElement(quizId, questions, savedSelections, accessState);
 
     // Insert the quiz after the rendered markdown content for the response.
     root.appendChild(quiz);
@@ -713,9 +731,10 @@
    * @param {string} quizId - Stable quiz id.
    * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}>} questions - Parsed questions.
    * @param {Record<string, Record<string, string>>} savedSelections - Stored selections by quiz id.
+   * @param {{status?: string, trialRemainingMs?: number}} accessState - Current paywall access state.
    * @returns {HTMLElement} Renderable quiz container.
    */
-  function buildQuizElement(quizId, questions, savedSelections) {
+  function buildQuizElement(quizId, questions, savedSelections, accessState) {
     // Create an extension-owned container for all parsed questions.
     const quiz = document.createElement("section");
     quiz.className = `${EXTENSION_PREFIX}-quiz`;
@@ -726,6 +745,11 @@
     title.className = `${EXTENSION_PREFIX}-title`;
     title.textContent = "Select your answer(s)";
     quiz.appendChild(title);
+
+    // Show trial status without interrupting the quiz while access is still valid.
+    if (accessState?.status === "trial") {
+      quiz.appendChild(buildTrialNotice(accessState));
+    }
 
     // Render each parsed question with an independent control group.
     for (let questionIndex = 0; questionIndex < questions.length; questionIndex += 1) {
@@ -740,6 +764,301 @@
 
     // Return the finished UI subtree for insertion into ChatGPT output.
     return quiz;
+  }
+
+  /**
+   * Builds a short notice for users still inside the 24-hour free trial.
+   *
+   * @param {{trialRemainingMs?: number}} accessState - Current trial timing state.
+   * @returns {HTMLElement} Trial notice element.
+   */
+  function buildTrialNotice(accessState) {
+    // Create a compact notice that matches the existing quiz card.
+    const notice = document.createElement("div");
+    notice.className = `${EXTENSION_PREFIX}-trial-notice`;
+
+    // Explain the deadline and price before the paywall appears.
+    notice.textContent = `${formatTrialRemaining(accessState.trialRemainingMs || 0)} left in your free trial. After that, unlock lifetime access for $5.`;
+
+    // Return the finished notice for insertion near the quiz title.
+    return notice;
+  }
+
+  /**
+   * Builds the locked paywall UI shown after the 24-hour trial expires.
+   *
+   * @param {{status?: string, error?: string}} accessState - Current paywall access state.
+   * @returns {HTMLElement} Paywall panel element.
+   */
+  function buildPaywallElement(accessState) {
+    // Use the quiz class so existing mutation filters treat this as extension UI.
+    const paywall = document.createElement("section");
+    paywall.className = `${EXTENSION_PREFIX}-quiz ${EXTENSION_PREFIX}-paywall`;
+
+    // Add the main locked-state headline.
+    const title = document.createElement("div");
+    title.className = `${EXTENSION_PREFIX}-title`;
+    title.textContent = "Unlock ChatGPT Quiz Mode";
+    paywall.appendChild(title);
+
+    // Explain why answer controls are not visible.
+    const message = document.createElement("p");
+    message.className = `${EXTENSION_PREFIX}-paywall-message`;
+    message.textContent = getPaywallMessage(accessState);
+    paywall.appendChild(message);
+
+    // Add payment, login, and retry actions in one row.
+    const actions = document.createElement("div");
+    actions.className = `${EXTENSION_PREFIX}-paywall-actions`;
+    actions.appendChild(buildPaywallButton("Pay $5", "openPaymentPage", true));
+    actions.appendChild(buildPaywallButton("I already paid", "openLoginPage", false));
+    actions.appendChild(buildPaywallButton("Retry status", "refreshAccessState", false));
+    paywall.appendChild(actions);
+
+    // Add a live status region for payment/login errors.
+    const status = document.createElement("div");
+    status.className = `${EXTENSION_PREFIX}-paywall-status`;
+    status.setAttribute("aria-live", "polite");
+    paywall.appendChild(status);
+
+    // Return the complete locked-state UI.
+    return paywall;
+  }
+
+  /**
+   * Creates a paywall action button.
+   *
+   * @param {string} label - Visible button label.
+   * @param {string} action - Paywall action identifier.
+   * @param {boolean} isPrimary - Whether the button is the primary call to action.
+   * @returns {HTMLButtonElement} Configured paywall button.
+   */
+  function buildPaywallButton(label, action, isPrimary) {
+    // Create a regular button so ChatGPT page forms are not affected.
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${EXTENSION_PREFIX}-paywall-button${isPrimary ? ` ${EXTENSION_PREFIX}-paywall-button-primary` : ""}`;
+    button.dataset.paywallAction = action;
+    button.textContent = label;
+    button.addEventListener("click", handlePaywallAction);
+
+    // Return the clickable payment/login action.
+    return button;
+  }
+
+  /**
+   * Creates user-facing paywall copy for locked or unknown access states.
+   *
+   * @param {{status?: string, error?: string}} accessState - Current paywall access state.
+   * @returns {string} Message for the paywall panel.
+   */
+  function getPaywallMessage(accessState) {
+    // Explain provider outages separately from normal locked access.
+    if (accessState?.status === "unknown") {
+      return "Your 24-hour trial has ended, and payment status could not be verified. Retry status, pay $5, or log in with the email you used to pay.";
+    }
+
+    // Default locked copy for expired unpaid trials.
+    return "Your 24-hour free trial has ended. Pay $5 once to unlock this extension on your account, or log in if you already paid.";
+  }
+
+  /**
+   * Handles payment, login, and retry actions from the paywall panel.
+   *
+   * @param {Event} event - Click event from a paywall button.
+   */
+  async function handlePaywallAction(event) {
+    // Guard against unexpected event targets.
+    const button = event.currentTarget;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    // Locate the surrounding paywall and status region for feedback.
+    const paywall = button.closest(`.${EXTENSION_PREFIX}-paywall`);
+    const status = paywall?.querySelector(`.${EXTENSION_PREFIX}-paywall-status`);
+    const action = button.dataset.paywallAction || "";
+
+    // Disable only the clicked action while the background request is running.
+    button.disabled = true;
+    setPaywallStatus(status, "Checking payment status...");
+
+    try {
+      // Retry requests should immediately re-check and rebuild the locked output.
+      if (action === "refreshAccessState") {
+        clearAccessStateCache();
+        await refreshPaywallRoot(paywall?.closest('[data-message-author-role="assistant"]') || null);
+        return;
+      }
+
+      // Payment and login actions are delegated to the background service worker.
+      const response = await sendPaywallMessage(action);
+      if (!response?.ok) {
+        throw new Error(response?.error || "Unable to open the payment page.");
+      }
+
+      // Tell users to finish the provider flow in the newly opened tab.
+      setPaywallStatus(status, "A new tab opened. Finish payment or login there, then return to this page.");
+    } catch (error) {
+      // Show concise failures without exposing stack traces.
+      setPaywallStatus(status, getErrorMessage(error));
+    } finally {
+      // Re-enable the clicked action for retries.
+      button.disabled = false;
+    }
+  }
+
+  /**
+   * Reads the current paid/trial/locked state from the background worker.
+   *
+   * @param {boolean} shouldBypassCache - Whether to force a provider recheck.
+   * @returns {Promise<{ok?: boolean, status?: string, trialRemainingMs?: number, error?: string}>} Access state.
+   */
+  async function readAccessState(shouldBypassCache) {
+    // Reuse recent status checks so multiple visible quizzes do not spam the provider.
+    if (!shouldBypassCache && accessStateCache && Date.now() - accessStateCache.createdAt < ACCESS_CACHE_DURATION_MS) {
+      return accessStateCache.value;
+    }
+
+    try {
+      // Ask the background worker because ExtensionPay owns the MV3 service worker.
+      const response = await sendPaywallMessage("getAccessState");
+      const accessState = response || {
+        ok: false,
+        status: "unknown",
+        trialRemainingMs: 0
+      };
+
+      // Cache the normalized response for nearby assistant outputs.
+      accessStateCache = {
+        createdAt: Date.now(),
+        value: accessState
+      };
+
+      // Return the provider-backed access state.
+      return accessState;
+    } catch (error) {
+      // Surface background failures as an unknown state so expired trials stay gated.
+      const accessState = {
+        ok: false,
+        status: "unknown",
+        trialRemainingMs: 0,
+        error: getErrorMessage(error)
+      };
+
+      // Cache the failure briefly to avoid repeated runtime errors.
+      accessStateCache = {
+        createdAt: Date.now(),
+        value: accessState
+      };
+
+      // Return the safe locked/unknown state.
+      return accessState;
+    }
+  }
+
+  /**
+   * Sends one paywall message to the extension background worker.
+   *
+   * @param {string} action - Paywall action without the extension prefix.
+   * @returns {Promise<Record<string, any>>} Background response.
+   */
+  function sendPaywallMessage(action) {
+    // Reject immediately when the runtime API is unavailable.
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return Promise.reject(new Error("Extension runtime is unavailable."));
+    }
+
+    // Wrap Chrome's callback API so callers can await the response.
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: `${EXTENSION_PREFIX}:${action}`
+        },
+        (response) => {
+          // Convert Chrome runtime failures into normal promise rejections.
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message));
+            return;
+          }
+
+          // Resolve with the background response for normal handling.
+          resolve(response || {});
+        }
+      );
+    });
+  }
+
+  /**
+   * Determines whether the access state should block quiz controls.
+   *
+   * @param {{status?: string}} accessState - Current access state.
+   * @returns {boolean} True when the paywall should be shown.
+   */
+  function isAccessLocked(accessState) {
+    // Only paid and active-trial users can reach the quiz UI.
+    return accessState?.status !== "paid" && accessState?.status !== "trial";
+  }
+
+  /**
+   * Clears the short-lived access-state cache.
+   */
+  function clearAccessStateCache() {
+    // Force the next access check to call the background provider flow.
+    accessStateCache = null;
+  }
+
+  /**
+   * Updates a paywall status region if it exists.
+   *
+   * @param {Element | null | undefined} status - Status element to update.
+   * @param {string} message - Message to display.
+   */
+  function setPaywallStatus(status, message) {
+    // Ignore missing panels from stale DOM events.
+    if (!status) {
+      return;
+    }
+
+    // Write plain text so provider errors cannot inject markup.
+    status.textContent = message;
+  }
+
+  /**
+   * Formats remaining trial time for compact user-facing copy.
+   *
+   * @param {number} remainingMs - Remaining trial time in milliseconds.
+   * @returns {string} Human-readable remaining time.
+   */
+  function formatTrialRemaining(remainingMs) {
+    // Round up so users do not see zero until the trial has actually expired.
+    const minutes = Math.max(1, Math.ceil(remainingMs / 60000));
+
+    // Prefer hours for most of the 24-hour trial window.
+    if (minutes >= 60) {
+      const hours = Math.ceil(minutes / 60);
+      return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+    }
+
+    // Use minutes near the end of the trial.
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+
+  /**
+   * Extracts a message from unknown error values.
+   *
+   * @param {unknown} error - Error-like value.
+   * @returns {string} Readable error message.
+   */
+  function getErrorMessage(error) {
+    // Prefer Error.message when available.
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    // Fall back to string conversion for Chrome runtime errors.
+    return String(error || "Payment status is unavailable.");
   }
 
   /**
@@ -1150,6 +1469,46 @@
     // Store the conversation-scoped selections as JSON for page-level context.
     context.dataset.storageKey = getStorageKey();
     context.textContent = JSON.stringify(selections);
+  }
+
+  /**
+   * Refreshes locked paywall panels after users return from payment or login.
+   */
+  function refreshAccessGatedOutputs() {
+    // Skip background tab changes until the user returns to ChatGPT.
+    if (document.visibilityState === "hidden") {
+      return;
+    }
+
+    // Force the next access read to verify provider status again.
+    clearAccessStateCache();
+
+    // Reprocess each locked output so paid users see quiz controls immediately.
+    const paywalls = document.querySelectorAll(`.${EXTENSION_PREFIX}-paywall`);
+    for (const paywall of paywalls) {
+      refreshPaywallRoot(paywall.closest('[data-message-author-role="assistant"]'));
+    }
+  }
+
+  /**
+   * Rebuilds one assistant output after paywall status may have changed.
+   *
+   * @param {Element | null} root - Assistant output root to rebuild.
+   * @returns {Promise<void>} Resolves after the output has been reprocessed.
+   */
+  async function refreshPaywallRoot(root) {
+    // Ignore stale or already-processing roots.
+    if (!root || processingRoots.has(root)) {
+      return;
+    }
+
+    // Remove the locked UI while keeping the original answer hidden during rebuild.
+    removeExistingQuiz(root, false);
+    root.removeAttribute(PROCESSED_ATTRIBUTE);
+    processedRoots.delete(root);
+
+    // Re-run the normal parser and gate with a fresh access state.
+    await processAssistantRoot(root);
   }
 
   /**

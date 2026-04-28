@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT MCQ Radio Answers",
+  "name": "ChatGPT Quiz Mode",
   "description": "Detects multiple-choice and SATA answers in ChatGPT outputs, hides answer keys, and adds answer controls.",
   "version": "0.1.0",
   "permissions": [
     "storage"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -19,6 +22,15 @@
         "styles.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://extensionpay.com/*"
+      ],
+      "js": [
+        "ExtPay.js"
+      ],
+      "run_at": "document_start"
     }
   ]
 }
