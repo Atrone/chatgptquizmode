@@ -129,12 +129,13 @@
 }
 
 .mcq-radio-extension-paywall-button-primary {
-  background: currentColor;
-  color: Canvas;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: currentColor;
+  color: inherit;
 }
 
 .mcq-radio-extension-paywall-button-primary:hover:not(:disabled) {
-  opacity: 0.86;
+  background: color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .mcq-radio-extension-paywall-status {
