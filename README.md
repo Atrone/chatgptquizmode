@@ -29,12 +29,11 @@ This extension uses [ExtensionPay](https://extensionpay.com/) for account-backed
 
 1. Register the extension in ExtensionPay.
 2. Create a one-time plan for `$5.00 USD`.
-3. Set that plan's nickname to `lifetime`, or update `EXTENSIONPAY_PLAN_NICKNAME` in `background.js`.
-4. Update `EXTENSIONPAY_EXTENSION_ID` in `background.js` to match the ExtensionPay extension id.
-5. Enable Google Pay in Stripe payment methods where available, so eligible users see Google Pay in the hosted checkout.
-6. Enable ExtensionPay login/reactivation by email so paid users can unlock access across browser profiles or devices.
+3. Update `EXTENSIONPAY_EXTENSION_ID` in `background.js` to match the ExtensionPay extension id.
+4. Enable Google Pay in Stripe payment methods where available, so eligible users see Google Pay in the hosted checkout.
+5. Enable ExtensionPay login/reactivation by email so paid users can unlock access across browser profiles or devices.
 
-The quiz controls render normally during the first 24 hours after install. After that, unpaid users see a paywall with **Pay $5**, **I already paid**, and **Retry status** actions.
+The quiz controls render normally during the first 24 hours after install. After that, unpaid users see a paywall with **Pay Now - $5**, **I already paid**, and **Retry status** actions.
 
 ## Example ChatGPT Output
 

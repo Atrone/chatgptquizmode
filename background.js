@@ -2,7 +2,6 @@ importScripts("ExtPay.js");
 
 // Keep provider configuration in one place for ExtensionPay setup.
 const EXTENSIONPAY_EXTENSION_ID = "chatgpt-quiz-mode-interactive-mcqs";
-const EXTENSIONPAY_PLAN_NICKNAME = "lifetime";
 const EXTENSION_PREFIX = "mcq-radio-extension";
 const TRIAL_DURATION_MS = 24 * 60 * 60 * 1000;
 const LOCAL_INSTALL_KEY = `${EXTENSION_PREFIX}:installedAt`;
@@ -68,9 +67,9 @@ async function handlePaywallMessage(message) {
     return getAccessState(extpay);
   }
 
-  // Open the one-time payment page for the configured plan.
+  // Open ExtensionPay's payment picker so the Pay Now button appears directly.
   if (message.type === `${EXTENSION_PREFIX}:openPaymentPage`) {
-    await extpay.openPaymentPage(EXTENSIONPAY_PLAN_NICKNAME);
+    await extpay.openPaymentPage();
     return {
       ok: true
     };

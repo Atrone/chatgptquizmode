@@ -810,7 +810,7 @@
     // Add payment, login, and retry actions in one row.
     const actions = document.createElement("div");
     actions.className = `${EXTENSION_PREFIX}-paywall-actions`;
-    actions.appendChild(buildPaywallButton("Pay $5", "openPaymentPage", true));
+    actions.appendChild(buildPaywallButton("Pay Now - $5", "openPaymentPage", true));
     actions.appendChild(buildPaywallButton("I already paid", "openLoginPage", false));
     actions.appendChild(buildPaywallButton("Retry status", "refreshAccessState", false));
     paywall.appendChild(actions);
