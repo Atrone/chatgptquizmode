@@ -96,7 +96,67 @@
 .mcq-radio-extension-score-result {
   font-size: 0.9rem;
   line-height: 1.45;
-  white-space: pre-wrap;
+  width: 100%;
+}
+
+.mcq-radio-extension-score-summary {
+  font-weight: 650;
+  margin-bottom: 0.5rem;
+}
+
+.mcq-radio-extension-score-details {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mcq-radio-extension-score-detail {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-left-width: 0.25rem;
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.7rem;
+}
+
+.mcq-radio-extension-score-detail-correct {
+  border-left-color: #22c55e;
+}
+
+.mcq-radio-extension-score-detail-incorrect,
+.mcq-radio-extension-score-detail-unanswered {
+  border-left-color: #f97316;
+}
+
+.mcq-radio-extension-score-detail-unknown {
+  border-left-color: #94a3b8;
+}
+
+.mcq-radio-extension-score-detail-title {
+  font-weight: 650;
+  margin-bottom: 0.35rem;
+}
+
+.mcq-radio-extension-answer-feedback {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+}
+
+.mcq-radio-extension-answer-feedback-label {
+  flex: 0 0 auto;
+  font-weight: 650;
+}
+
+.mcq-radio-extension-answer-feedback-value {
+  min-width: 0;
+}
+
+.mcq-radio-extension-score-rationale {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  border-radius: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.6rem;
 }
 
 .mcq-radio-extension-paywall-message {

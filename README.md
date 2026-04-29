@@ -11,6 +11,7 @@ A small Manifest V3 Chrome extension that detects multiple-choice-question style
 - Detects SATA prompts such as `SATA`, `select all that apply`, and `choose all that apply`, then uses checkboxes.
 - Hides the original ChatGPT multiple-choice output after the generated answer controls finish rendering.
 - Adds a **Score** button that grades selected answers against parsed answer keys, including multi-answer SATA keys.
+- Shows answer rationales after scoring when ChatGPT includes rationale or explanation text in the quiz output.
 - Stores selected answers with `chrome.storage.local`, scoped to the current conversation URL.
 - Mirrors the stored selections into a hidden page element named `mcq-radio-extension-conversation-context` so the current conversation page has a DOM-level context copy.
 - Allows a 24-hour trial after install, then requires a one-time $5 account unlock through ExtensionPay/Stripe.
@@ -46,9 +47,10 @@ C. Paris
 D. Rome
 
 Answer: C
+Rationale: Paris is the capital city of France.
 ```
 
-The extension hides `Answer: C`, renders radio buttons for `A` through `D`, and the **Score** button reports whether the selected answer is correct.
+The extension hides `Answer: C`, renders radio buttons for `A` through `D`, and the **Score** button reports whether the selected answer is correct. If rationale text is present, the score feedback includes it under the correct answer.
 
 ## SATA Example
 

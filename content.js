@@ -232,7 +232,7 @@
    * Parses one or more multiple-choice questions from plain rendered text.
    *
    * @param {string} text - ChatGPT assistant output text.
-   * @returns {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}>} Parsed questions.
+   * @returns {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}>} Parsed questions.
    */
   function parseMultipleChoiceQuestions(text) {
     // Normalize line endings and remove empty lines that split markdown paragraphs.
@@ -242,6 +242,9 @@
     let currentQuestion = null;
     let lastQuestion = null;
     let answerKeyGroups = [];
+    let rationaleGroups = [];
+    let activeRationaleQuestion = null;
+    let isCollectingNumberedRationales = false;
 
     // Walk line by line to preserve question prompts that appear before option A.
     for (const rawLine of lines) {
@@ -257,6 +260,8 @@
       // Save hidden answer keys for local scoring without rendering them.
       if (answerEntry) {
         const targetQuestion = currentQuestion || lastQuestion;
+        activeRationaleQuestion = null;
+        isCollectingNumberedRationales = false;
 
         // Treat plural unnumbered answer keys as a sequence unless the current question is SATA.
         if (answerEntry.isPotentialSequence && !targetQuestion?.isSata && questions.length > 0) {
@@ -266,19 +271,61 @@
         } else {
           assignAnswerLetters(targetQuestion, answerEntry.groups[0]);
         }
+        if (answerEntry.rationale) {
+          assignRationale(targetQuestion, answerEntry.rationale);
+        }
         continue;
       }
 
+      const rationaleEntry = parseRationaleEntry(line);
+
       // Stop option parsing when rationale or follow-up sections begin.
+      if (rationaleEntry) {
+        appendQuestionIfValid(questions, currentQuestion);
+        lastQuestion = currentQuestion;
+        currentQuestion = null;
+        pendingPromptLines = [];
+        activeRationaleQuestion = lastQuestion;
+        isCollectingNumberedRationales = rationaleEntry.isPlural;
+        if (rationaleEntry.text) {
+          assignRationale(lastQuestion, rationaleEntry.text);
+        }
+        continue;
+      }
+
+      // Stop option parsing at non-rationale follow-up sections.
       if (isExplanationBoundary(line)) {
         appendQuestionIfValid(questions, currentQuestion);
         lastQuestion = currentQuestion;
         currentQuestion = null;
         pendingPromptLines = [];
+        activeRationaleQuestion = null;
+        isCollectingNumberedRationales = false;
         continue;
       }
 
+      // Capture numbered rationale sections like "Rationales: 1. ... 2. ...".
+      if (isCollectingNumberedRationales) {
+        const numberedRationale = parseNumberedRationale(line);
+        if (numberedRationale) {
+          rationaleGroups[numberedRationale.index] = numberedRationale.text;
+          activeRationaleQuestion = null;
+          continue;
+        }
+      }
+
       const option = parseOptionLine(line);
+      const questionStart = line.match(QUESTION_START_PATTERN);
+
+      // Append plain continuation lines after a "Rationale:" label.
+      if (activeRationaleQuestion && !option && !questionStart) {
+        appendRationale(activeRationaleQuestion, line);
+        continue;
+      }
+
+      // A new question or option ends the current freeform rationale capture.
+      activeRationaleQuestion = null;
+      isCollectingNumberedRationales = false;
 
       // Option lines start or continue a question group.
       if (option) {
@@ -299,8 +346,6 @@
         continue;
       }
 
-      const questionStart = line.match(QUESTION_START_PATTERN);
-
       // Numbered question text starts a new prompt after a finished option group.
       if (currentQuestion && currentQuestion.options.length > 0) {
         appendQuestionIfValid(questions, currentQuestion);
@@ -317,6 +362,7 @@
     // Flush the final parsed question, if it has enough options.
     appendQuestionIfValid(questions, currentQuestion);
     assignAnswerKeyToQuestions(questions, answerKeyGroups);
+    assignRationaleGroupsToQuestions(questions, rationaleGroups);
 
     // Only consider outputs with at least one real two-option question to be MCQ content.
     return questions;
@@ -365,7 +411,7 @@
    * @param {string[]} promptLines - Lines seen before the option group.
    * @param {number} questionIndex - Zero-based parsed question index.
    * @param {RegExpMatchArray | null} questionMatch - Optional numbered question match.
-   * @returns {{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}} Parsed question shell.
+   * @returns {{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}} Parsed question shell.
    */
   function createQuestion(promptLines, questionIndex, questionMatch = null) {
     // Build the raw prompt first so inline answer keys can be removed in one place.
@@ -378,6 +424,7 @@
       prompt: inlineAnswer.cleanText || `Question ${questionIndex + 1}`,
       options: [],
       correctLetters: inlineAnswer.letters,
+      rationale: "",
       isSata: hasSataCue(promptCueLines) || inlineAnswer.letters.length > 1
     };
   }
@@ -412,7 +459,7 @@
    * Finds answer letters in answer-key lines, including SATA multi-answer keys.
    *
    * @param {string} line - Trimmed rendered line.
-   * @returns {{groups: string[][], isPotentialSequence: boolean} | null} Parsed answer groups, or null for non-answer lines.
+   * @returns {{groups: string[][], isPotentialSequence: boolean, rationale: string}} Parsed answer groups, or null for non-answer lines.
    */
   function parseAnswerEntry(line) {
     // Parse answer-key prefixes that ChatGPT commonly emits after questions.
@@ -425,10 +472,10 @@
     }
 
     // Split the answer body into one or more question-specific answer groups.
-    const body = prefixedMatch[1].trim();
-    const groups = parseAnswerGroups(body);
+    const body = splitAnswerBodyRationale(prefixedMatch[1].trim());
+    const groups = parseAnswerGroups(body.answerText);
     const hasPluralSequencePrefix = /^\s*(?:answers|answer key)\s*[:\-]/i.test(line);
-    const isPotentialSequence = hasPluralSequencePrefix && groups.length === 1 && groups[0].length > 1 && !hasGroupedAnswerNumbers(body);
+    const isPotentialSequence = hasPluralSequencePrefix && groups.length === 1 && groups[0].length > 1 && !hasGroupedAnswerNumbers(body.answerText);
 
     // Ignore malformed answer lines that do not include option letters.
     if (groups.length === 0) {
@@ -436,7 +483,39 @@
     }
 
     // Return grouped letters for single MCQ, SATA, or ordered answer keys.
-    return { groups, isPotentialSequence };
+    return { groups, isPotentialSequence, rationale: body.rationale };
+  }
+
+  /**
+   * Separates a trailing rationale from an answer-key body when ChatGPT includes one.
+   *
+   * @param {string} body - Text after the answer-key prefix.
+   * @returns {{answerText: string, rationale: string}} Answer letters and optional rationale text.
+   */
+  function splitAnswerBodyRationale(body) {
+    // Match labelled rationale text after the answer letters.
+    const labelledMatch = body.match(/^(.*?)\s+(?:rationale|explanation)\s*[:\-—]\s*(.+)$/i);
+    if (labelledMatch) {
+      return {
+        answerText: labelledMatch[1].trim(),
+        rationale: labelledMatch[2].trim()
+      };
+    }
+
+    // Match compact forms like "B - because the symptom is expected".
+    const becauseMatch = body.match(/^([A-H](?:\s*(?:,|;|and|&)\s*[A-H])*)\s*(?:[\.\)]|\s*[-—]\s*)\s*(because|since)\s+(.+)$/i);
+    if (becauseMatch) {
+      return {
+        answerText: becauseMatch[1].trim(),
+        rationale: `${becauseMatch[2]} ${becauseMatch[3]}`.trim()
+      };
+    }
+
+    // Return the original body when no rationale marker is present.
+    return {
+      answerText: body,
+      rationale: ""
+    };
   }
 
   /**
@@ -527,6 +606,100 @@
   }
 
   /**
+   * Assigns parsed rationale groups across parsed questions.
+   *
+   * @param {Array<{rationale: string}>} questions - Parsed question list.
+   * @param {string[]} rationaleGroups - Ordered rationale text by question index.
+   */
+  function assignRationaleGroupsToQuestions(questions, rationaleGroups) {
+    // Skip when no numbered rationale section was discovered.
+    if (rationaleGroups.length === 0) {
+      return;
+    }
+
+    // Apply numbered rationales without overwriting question-local rationale text.
+    for (let index = 0; index < questions.length && index < rationaleGroups.length; index += 1) {
+      if (!questions[index].rationale && rationaleGroups[index]) {
+        questions[index].rationale = rationaleGroups[index];
+      }
+    }
+  }
+
+  /**
+   * Parses a rationale or explanation label line.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {{text: string, isPlural: boolean} | null} Parsed rationale metadata.
+   */
+  function parseRationaleEntry(line) {
+    // Match labels such as "Rationale:" or "Explanations:".
+    const match = line.match(/^(rationales?|explanations?|teaching points?|review)\s*[:\-—]?\s*(.*)$/i);
+    if (!match) {
+      return null;
+    }
+
+    // Preserve the labelled text and whether numbered entries may follow.
+    return {
+      text: match[2].trim(),
+      isPlural: /s$/i.test(match[1])
+    };
+  }
+
+  /**
+   * Parses a numbered rationale item from a rationale section.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {{index: number, text: string} | null} Zero-based rationale item.
+   */
+  function parseNumberedRationale(line) {
+    // Match "1. text", "1) text", or "Question 1: text".
+    const match = line.match(/^(?:question\s*)?(\d+)\s*[\.\):\-]\s*(.+)$/i);
+    if (!match) {
+      return null;
+    }
+
+    // Convert the visible question number to a zero-based array index.
+    return {
+      index: Math.max(0, Number(match[1]) - 1),
+      text: match[2].trim()
+    };
+  }
+
+  /**
+   * Assigns rationale text to a parsed question when available.
+   *
+   * @param {{rationale: string} | null} question - Parsed question to update.
+   * @param {string} rationale - Rationale text from the assistant output.
+   */
+  function assignRationale(question, rationale) {
+    // Skip rationale text that does not map to a parsed question.
+    if (!question || !rationale) {
+      return;
+    }
+
+    // Store the first complete rationale for this question.
+    if (!question.rationale) {
+      question.rationale = rationale.trim();
+    }
+  }
+
+  /**
+   * Appends continuation text to a question rationale.
+   *
+   * @param {{rationale: string} | null} question - Parsed question to update.
+   * @param {string} line - Additional rationale line.
+   */
+  function appendRationale(question, line) {
+    // Skip continuation text without a target question.
+    if (!question || !line) {
+      return;
+    }
+
+    // Join rationale paragraphs with spaces for compact score feedback.
+    question.rationale = question.rationale ? `${question.rationale} ${line}` : line;
+  }
+
+  /**
    * Detects whether prompt lines describe a SATA-style question.
    *
    * @param {string[]} promptLines - Prompt lines associated with a question.
@@ -548,7 +721,7 @@
    */
   function isExplanationBoundary(line) {
     // Match common labels that indicate the answer options have ended.
-    return /^(?:rationale|explanation|ordered response|correct order|next steps|teaching point|review)\b/i.test(line);
+    return /^(?:rationales?|explanations?|ordered response|correct order|next steps|teaching points?|review)\b/i.test(line);
   }
 
   /**
@@ -671,7 +844,7 @@
    * Builds a stable quiz id from the page path and parsed question text.
    *
    * @param {Element} root - Assistant output root.
-   * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}>} questions - Parsed questions.
+   * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}>} questions - Parsed questions.
    * @returns {string} Stable quiz identifier.
    */
   function createQuizId(root, questions) {
@@ -729,7 +902,7 @@
    * Creates the interactive answer-selection quiz element.
    *
    * @param {string} quizId - Stable quiz id.
-   * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}>} questions - Parsed questions.
+   * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}>} questions - Parsed questions.
    * @param {Record<string, Record<string, string>>} savedSelections - Stored selections by quiz id.
    * @param {{status?: string, trialRemainingMs?: number}} accessState - Current paywall access state.
    * @returns {HTMLElement} Renderable quiz container.
@@ -1065,7 +1238,7 @@
    * Builds one answer-selection question group.
    *
    * @param {string} quizId - Stable quiz id.
-   * @param {{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], isSata: boolean}} question - Parsed question.
+   * @param {{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}} question - Parsed question.
    * @param {number} questionIndex - Zero-based question index.
    * @param {Record<string, Record<string, string>>} savedSelections - Stored selections by quiz id.
    * @returns {HTMLElement} Question group element.
@@ -1076,6 +1249,7 @@
     wrapper.className = `${EXTENSION_PREFIX}-question`;
     wrapper.dataset.questionIndex = String(questionIndex);
     wrapper.dataset.correctLetters = question.correctLetters.join(",");
+    wrapper.dataset.rationale = question.rationale || "";
     wrapper.dataset.isSata = String(question.isSata);
 
     // Show the prompt above the selectable answer options.
@@ -1184,15 +1358,15 @@
       return;
     }
 
-    // Render a concise score and per-question feedback.
-    result.textContent = createScoreMessage(score);
+    // Render structured feedback so answers and rationales are easy to scan.
+    renderScoreResult(result, score);
   }
 
   /**
    * Calculates quiz scoring details from generated answer controls.
    *
    * @param {Element} quiz - Quiz container to score.
-   * @returns {{correct: number, total: number, missing: number, unknown: number, details: string[]}} Score details.
+   * @returns {{correct: number, total: number, missing: number, unknown: number, details: Array<Record<string, unknown>>}} Score details.
    */
   function calculateQuizScore(quiz) {
     // Initialize counters for score reporting.
@@ -1214,7 +1388,7 @@
       // Track questions where the output did not include an answer key.
       if (correctLetters.length === 0) {
         score.unknown += 1;
-        score.details.push(`${questionNumber}: no answer key found`);
+        score.details.push(createScoreDetail(question, questionNumber, "unknown", selectedLetters, correctLetters));
         continue;
       }
 
@@ -1224,21 +1398,64 @@
       // Report unanswered questions separately from wrong selections.
       if (selectedLetters.length === 0) {
         score.missing += 1;
-        score.details.push(`${questionNumber}: unanswered, correct ${formatLetters(correctLetters)}`);
+        score.details.push(createScoreDetail(question, questionNumber, "unanswered", selectedLetters, correctLetters));
         continue;
       }
 
       // Compare the selected options to the hidden answer key.
       if (areLetterSetsEqual(selectedLetters, correctLetters)) {
         score.correct += 1;
-        score.details.push(`${questionNumber}: correct (${formatLetters(selectedLetters)})`);
+        score.details.push(createScoreDetail(question, questionNumber, "correct", selectedLetters, correctLetters));
       } else {
-        score.details.push(`${questionNumber}: ${formatLetters(selectedLetters)} selected, correct ${formatLetters(correctLetters)}`);
+        score.details.push(createScoreDetail(question, questionNumber, "incorrect", selectedLetters, correctLetters));
       }
     }
 
     // Return all details needed by the renderer.
     return score;
+  }
+
+  /**
+   * Creates a structured per-question score detail.
+   *
+   * @param {Element} question - Question wrapper to inspect.
+   * @param {number} questionNumber - One-based question number.
+   * @param {string} status - Scoring status for this question.
+   * @param {string[]} selectedLetters - User-selected option letters.
+   * @param {string[]} correctLetters - Correct option letters.
+   * @returns {Record<string, unknown>} Render-ready score detail.
+   */
+  function createScoreDetail(question, questionNumber, status, selectedLetters, correctLetters) {
+    // Package letters and option text so score rendering stays presentation-focused.
+    return {
+      questionNumber,
+      status,
+      selectedAnswers: getAnswerSummaries(question, selectedLetters),
+      correctAnswers: getAnswerSummaries(question, correctLetters),
+      rationale: question.dataset.rationale || ""
+    };
+  }
+
+  /**
+   * Reads option text for selected or correct answer letters.
+   *
+   * @param {Element} question - Question wrapper to inspect.
+   * @param {string[]} letters - Option letters to summarize.
+   * @returns {Array<{letter: string, text: string}>} Answer summaries.
+   */
+  function getAnswerSummaries(question, letters) {
+    // Map every input by its answer letter for quick lookup.
+    const inputs = [...question.querySelectorAll("input[type='radio'], input[type='checkbox']")]
+      .filter((input) => input instanceof HTMLInputElement);
+
+    // Return summaries in the requested letter order.
+    return letters.map((letter) => {
+      const input = inputs.find((candidate) => candidate.value === letter);
+      return {
+        letter,
+        text: input?.dataset.optionText || ""
+      };
+    });
   }
 
   /**
@@ -1304,15 +1521,22 @@
   }
 
   /**
-   * Creates a readable score message for the quiz UI.
+   * Renders readable score feedback for the quiz UI.
    *
-   * @param {{correct: number, total: number, missing: number, unknown: number, details: string[]}} score - Score details.
-   * @returns {string} Human-readable score summary.
+   * @param {Element} result - Score result container.
+   * @param {{correct: number, total: number, missing: number, unknown: number, details: Array<Record<string, unknown>>}} score - Score details.
    */
-  function createScoreMessage(score) {
+  function renderScoreResult(result, score) {
+    // Clear the previous score so repeated clicks refresh cleanly.
+    result.replaceChildren();
+
     // Explain when scoring is impossible because no answer keys were parsed.
     if (score.total === 0) {
-      return "No answer key was found for this output, so the extension cannot score it.";
+      const emptyMessage = document.createElement("div");
+      emptyMessage.className = `${EXTENSION_PREFIX}-score-summary`;
+      emptyMessage.textContent = "No answer key was found for this output, so the extension cannot score it.";
+      result.appendChild(emptyMessage);
+      return;
     }
 
     // Build the main score summary.
@@ -1326,8 +1550,120 @@
       parts.push(`${score.unknown} without answer keys`);
     }
 
-    // Add concise per-question feedback after the summary.
-    return `${parts.join(" | ")}\n${score.details.join("; ")}`;
+    // Render the main summary before the detailed question cards.
+    const summary = document.createElement("div");
+    summary.className = `${EXTENSION_PREFIX}-score-summary`;
+    summary.textContent = parts.join(" | ");
+    result.appendChild(summary);
+
+    // Add one detail card per generated question.
+    const details = document.createElement("ol");
+    details.className = `${EXTENSION_PREFIX}-score-details`;
+    for (const detail of score.details) {
+      details.appendChild(buildScoreDetailElement(detail));
+    }
+    result.appendChild(details);
+  }
+
+  /**
+   * Builds one structured score detail item.
+   *
+   * @param {Record<string, unknown>} detail - Render-ready question feedback.
+   * @returns {HTMLLIElement} Score detail list item.
+   */
+  function buildScoreDetailElement(detail) {
+    // Create a status-specific list item for styling.
+    const item = document.createElement("li");
+    item.className = `${EXTENSION_PREFIX}-score-detail ${EXTENSION_PREFIX}-score-detail-${detail.status}`;
+
+    // Add the question status line.
+    const title = document.createElement("div");
+    title.className = `${EXTENSION_PREFIX}-score-detail-title`;
+    title.textContent = `Question ${detail.questionNumber}: ${getScoreStatusLabel(String(detail.status || ""))}`;
+    item.appendChild(title);
+
+    // Add the selected and correct answer rows.
+    item.appendChild(buildAnswerFeedbackLine("Your answer", detail.selectedAnswers, "None selected"));
+    if (detail.status !== "unknown") {
+      item.appendChild(buildAnswerFeedbackLine("Correct answer", detail.correctAnswers, "Unavailable"));
+    }
+
+    // Add the rationale when the assistant output provided one.
+    if (detail.rationale) {
+      const rationale = document.createElement("div");
+      rationale.className = `${EXTENSION_PREFIX}-score-rationale`;
+      rationale.textContent = String(detail.rationale);
+      item.appendChild(rationale);
+    }
+
+    // Return the finished score item.
+    return item;
+  }
+
+  /**
+   * Builds a labelled answer feedback row.
+   *
+   * @param {string} label - Row label.
+   * @param {unknown} answers - Answer summaries to render.
+   * @param {string} emptyText - Text to show when no answers are present.
+   * @returns {HTMLElement} Answer feedback row.
+   */
+  function buildAnswerFeedbackLine(label, answers, emptyText) {
+    // Normalize unknown detail data into an array.
+    const answerList = Array.isArray(answers) ? answers : [];
+    const row = document.createElement("div");
+    row.className = `${EXTENSION_PREFIX}-answer-feedback`;
+
+    // Render the row label before answer text.
+    const labelElement = document.createElement("span");
+    labelElement.className = `${EXTENSION_PREFIX}-answer-feedback-label`;
+    labelElement.textContent = `${label}:`;
+    row.appendChild(labelElement);
+
+    // Render either formatted answers or the empty state.
+    const value = document.createElement("span");
+    value.className = `${EXTENSION_PREFIX}-answer-feedback-value`;
+    value.textContent = answerList.length > 0 ? formatAnswerSummaries(answerList) : emptyText;
+    row.appendChild(value);
+
+    // Return the completed answer row.
+    return row;
+  }
+
+  /**
+   * Formats answer summaries with letters and option text.
+   *
+   * @param {Array<{letter?: string, text?: string}>} answers - Answer summaries to format.
+   * @returns {string} Human-readable answer text.
+   */
+  function formatAnswerSummaries(answers) {
+    // Include option text when available, falling back to the letter only.
+    return answers
+      .map((answer) => answer.text ? `${answer.letter}. ${answer.text}` : String(answer.letter || ""))
+      .filter(Boolean)
+      .join("; ");
+  }
+
+  /**
+   * Converts score statuses into readable labels.
+   *
+   * @param {string} status - Score detail status.
+   * @returns {string} Human-readable status label.
+   */
+  function getScoreStatusLabel(status) {
+    // Keep labels short so the answer details carry the explanation.
+    if (status === "correct") {
+      return "Correct";
+    }
+    if (status === "incorrect") {
+      return "Incorrect";
+    }
+    if (status === "unanswered") {
+      return "Unanswered";
+    }
+
+    // Unknown means no answer key was parsed for that question.
+    return "Not scored";
   }
 
   /**
@@ -1355,6 +1691,7 @@
     input.dataset.isSata = String(isSata);
     input.dataset.quizId = quizId;
     input.dataset.questionIndex = String(questionIndex);
+    input.dataset.optionText = option.text;
     input.addEventListener("change", handleOptionChange);
 
     // Render the option letter separately for readability.
