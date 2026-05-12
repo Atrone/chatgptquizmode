@@ -29,6 +29,15 @@
   padding: 0.5rem 0.65rem;
 }
 
+.mcq-radio-extension-streaming-placeholder {
+  opacity: 0.82;
+}
+
+.mcq-radio-extension-streaming-placeholder-message {
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .mcq-radio-extension-question {
   margin-top: 0.9rem;
 }

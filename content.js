@@ -80,7 +80,8 @@
 
       // Once the partial text is recognizable as an MCQ, keep source output hidden.
       if (hasRenderableMcqContent(root)) {
-        hideOriginalOutput(root, null);
+        const placeholder = ensureStreamingPlaceholder(root);
+        hideOriginalOutput(root, placeholder);
       }
     }
 
@@ -149,6 +150,58 @@
   }
 
   /**
+   * Ensures a streaming placeholder is visible until the final quiz is ready.
+   *
+   * @param {Element} root - Assistant output root.
+   * @returns {HTMLElement} Existing or newly-created placeholder element.
+   */
+  function ensureStreamingPlaceholder(root) {
+    // Reuse the current placeholder while ChatGPT continues appending tokens.
+    const existingPlaceholder = root.querySelector(`.${EXTENSION_PREFIX}-streaming-placeholder`);
+    if (existingPlaceholder) {
+      return existingPlaceholder;
+    }
+
+    // Create an extension-owned card so mutation filters and parsers ignore it.
+    const placeholder = document.createElement("section");
+    placeholder.className = `${EXTENSION_PREFIX}-quiz ${EXTENSION_PREFIX}-streaming-placeholder`;
+    placeholder.setAttribute("aria-live", "polite");
+
+    // Tell the user why the generated answer text is temporarily hidden.
+    const title = document.createElement("div");
+    title.className = `${EXTENSION_PREFIX}-title`;
+    title.textContent = "Quiz is being prepared";
+    placeholder.appendChild(title);
+
+    // Explain that controls will appear after the assistant finishes streaming.
+    const message = document.createElement("div");
+    message.className = `${EXTENSION_PREFIX}-streaming-placeholder-message`;
+    message.textContent = "ChatGPT is still writing. Your quiz will appear here soon.";
+    placeholder.appendChild(message);
+
+    // Place the placeholder at the end of the assistant response.
+    root.appendChild(placeholder);
+
+    // Return the visible placeholder for source-output hiding.
+    return placeholder;
+  }
+
+  /**
+   * Removes any temporary streaming placeholder from an assistant output.
+   *
+   * @param {Element} root - Assistant output root.
+   */
+  function removeStreamingPlaceholder(root) {
+    // Find all placeholders in case a previous page update duplicated one.
+    const placeholders = root.querySelectorAll(`.${EXTENSION_PREFIX}-streaming-placeholder`);
+
+    // Remove the temporary cards before final quiz, paywall, or source output appears.
+    for (const placeholder of placeholders) {
+      placeholder.remove();
+    }
+  }
+
+  /**
    * Processes one ChatGPT assistant output and inserts radio choices when MCQs exist.
    *
    * @param {Element} root - Assistant message content root.
@@ -168,6 +221,7 @@
 
     // Mark non-MCQ outputs as processed to avoid repeated parsing.
     if (questions.length === 0) {
+      removeStreamingPlaceholder(root);
       restoreOriginalOutput(root);
       root.setAttribute(PROCESSED_ATTRIBUTE, "true");
       processedRoots.add(root);
@@ -182,6 +236,7 @@
     const accessState = await readAccessState(false);
     if (isAccessLocked(accessState)) {
       const paywall = buildPaywallElement(accessState);
+      removeStreamingPlaceholder(root);
       root.appendChild(paywall);
       hideOriginalOutput(root, paywall);
       root.setAttribute(PROCESSED_ATTRIBUTE, "true");
@@ -196,6 +251,7 @@
     const quiz = buildQuizElement(quizId, questions, savedSelections, accessState);
 
     // Insert the quiz after the rendered markdown content for the response.
+    removeStreamingPlaceholder(root);
     root.appendChild(quiz);
     hideOriginalOutput(root, quiz);
     root.setAttribute(PROCESSED_ATTRIBUTE, "true");
