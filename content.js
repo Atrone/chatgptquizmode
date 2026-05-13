@@ -969,11 +969,9 @@
     quiz.className = `${EXTENSION_PREFIX}-quiz`;
     quiz.setAttribute(QUIZ_ATTRIBUTE, quizId);
 
-    // Add a short label so users understand why controls appeared.
-    const title = document.createElement("div");
-    title.className = `${EXTENSION_PREFIX}-title`;
-    title.textContent = "Select your answer(s)";
-    quiz.appendChild(title);
+    // Add the quiz title and per-question scoring toggle above the questions.
+    const header = buildQuizHeader(quizId);
+    quiz.appendChild(header);
 
     // Show trial status without interrupting the quiz while access is still valid.
     if (accessState?.status === "trial") {
@@ -993,6 +991,58 @@
 
     // Return the finished UI subtree for insertion into ChatGPT output.
     return quiz;
+  }
+
+  /**
+   * Builds the top row for a generated quiz.
+   *
+   * @param {string} quizId - Stable quiz id.
+   * @returns {HTMLElement} Header with title and score-mode toggle.
+   */
+  function buildQuizHeader(quizId) {
+    // Create a flex row so the toggle can sit at the top right of the quiz.
+    const header = document.createElement("div");
+    header.className = `${EXTENSION_PREFIX}-header`;
+
+    // Add a short label so users understand why controls appeared.
+    const title = document.createElement("div");
+    title.className = `${EXTENSION_PREFIX}-title`;
+    title.textContent = "Select your answer(s)";
+    header.appendChild(title);
+
+    // Add the score-mode checkbox requested by the user.
+    const toggle = buildScoreEachQuestionToggle(quizId);
+    header.appendChild(toggle);
+
+    // Return the assembled quiz header.
+    return header;
+  }
+
+  /**
+   * Builds the checkbox that switches between quiz-level and per-question scoring.
+   *
+   * @param {string} quizId - Stable quiz id.
+   * @returns {HTMLLabelElement} Label containing the checkbox.
+   */
+  function buildScoreEachQuestionToggle(quizId) {
+    // Create a label so clicking the text toggles the checkbox too.
+    const label = document.createElement("label");
+    label.className = `${EXTENSION_PREFIX}-score-mode-toggle`;
+
+    // Configure the checkbox with the owning quiz id for event handling.
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.quizId = quizId;
+    input.addEventListener("change", handleScoreEachQuestionToggle);
+
+    // Add the visible toggle text.
+    const text = document.createElement("span");
+    text.textContent = "Score each question";
+
+    // Assemble and return the clickable toggle.
+    label.appendChild(input);
+    label.appendChild(text);
+    return label;
   }
 
   /**
@@ -1332,6 +1382,10 @@
       wrapper.appendChild(optionElement);
     }
 
+    // Prepare a hidden score action that appears when per-question scoring is enabled.
+    const scoreActions = buildQuestionScoreActions(quizId, questionIndex);
+    wrapper.appendChild(scoreActions);
+
     // Return the complete question block.
     return wrapper;
   }
@@ -1390,6 +1444,83 @@
   }
 
   /**
+   * Builds a per-question score button and result container.
+   *
+   * @param {string} quizId - Stable quiz id.
+   * @param {number} questionIndex - Zero-based question index.
+   * @returns {HTMLElement} Per-question score action area.
+   */
+  function buildQuestionScoreActions(quizId, questionIndex) {
+    // Create an action row that starts hidden until the quiz-level toggle is checked.
+    const actions = document.createElement("div");
+    actions.className = `${EXTENSION_PREFIX}-question-actions`;
+    actions.hidden = true;
+
+    // Add a score button scoped to this question only.
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${EXTENSION_PREFIX}-score-button ${EXTENSION_PREFIX}-question-score-button`;
+    button.dataset.quizId = quizId;
+    button.dataset.questionIndex = String(questionIndex);
+    button.textContent = "Score";
+    button.addEventListener("click", handleQuestionScoreClick);
+
+    // Reserve a live result area directly under the question.
+    const result = document.createElement("div");
+    result.className = `${EXTENSION_PREFIX}-score-result ${EXTENSION_PREFIX}-question-score-result`;
+    result.setAttribute("aria-live", "polite");
+
+    // Assemble and return the per-question controls.
+    actions.appendChild(button);
+    actions.appendChild(result);
+    return actions;
+  }
+
+  /**
+   * Switches between whole-quiz scoring and per-question scoring controls.
+   *
+   * @param {Event} event - Change event from the score-mode checkbox.
+   */
+  function handleScoreEachQuestionToggle(event) {
+    // Guard against unexpected events from non-checkbox elements.
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    // Locate the quiz that owns the checkbox so multiple quizzes stay independent.
+    const quiz = input.closest(`.${EXTENSION_PREFIX}-quiz`);
+    if (!quiz) {
+      return;
+    }
+
+    // Toggle a state class for styling hooks and make the two scoring modes exclusive.
+    const shouldScoreEachQuestion = input.checked;
+    quiz.classList.toggle(`${EXTENSION_PREFIX}-score-each-question-enabled`, shouldScoreEachQuestion);
+    setScoreModeVisibility(quiz, shouldScoreEachQuestion);
+  }
+
+  /**
+   * Shows the active scoring controls and hides the inactive scoring controls.
+   *
+   * @param {Element} quiz - Quiz container whose controls should be updated.
+   * @param {boolean} shouldScoreEachQuestion - Whether per-question scoring is enabled.
+   */
+  function setScoreModeVisibility(quiz, shouldScoreEachQuestion) {
+    // Hide the bottom whole-quiz action whenever per-question scoring is enabled.
+    const quizActions = quiz.querySelector(`.${EXTENSION_PREFIX}-actions`);
+    if (quizActions) {
+      quizActions.hidden = shouldScoreEachQuestion;
+    }
+
+    // Show or hide every per-question action row together.
+    const questionActions = quiz.querySelectorAll(`.${EXTENSION_PREFIX}-question-actions`);
+    for (const actions of questionActions) {
+      actions.hidden = !shouldScoreEachQuestion;
+    }
+  }
+
+  /**
    * Scores the selected inputs against parsed hidden answer keys.
    *
    * @param {Event} event - Click event from the score button.
@@ -1415,6 +1546,35 @@
     }
 
     // Render structured feedback so answers and rationales are easy to scan.
+    renderScoreResult(result, score);
+  }
+
+  /**
+   * Scores only the question that owns the clicked score button.
+   *
+   * @param {Event} event - Click event from a per-question score button.
+   */
+  function handleQuestionScoreClick(event) {
+    // Guard against unexpected events from non-button elements.
+    const button = event.target;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    // Find the question container that owns the clicked button.
+    const question = button.closest(`.${EXTENSION_PREFIX}-question`);
+    if (!question) {
+      return;
+    }
+
+    // Find the local result container under this same question.
+    const result = question.querySelector(`.${EXTENSION_PREFIX}-question-score-result`);
+    if (!result) {
+      return;
+    }
+
+    // Render feedback for this question without including the rest of the quiz.
+    const score = calculateQuestionScore(question);
     renderScoreResult(result, score);
   }
 
@@ -1468,6 +1628,56 @@
     }
 
     // Return all details needed by the renderer.
+    return score;
+  }
+
+  /**
+   * Calculates scoring details for a single generated question.
+   *
+   * @param {Element} question - Question container to score.
+   * @returns {{correct: number, total: number, missing: number, unknown: number, details: Array<Record<string, unknown>>}} Score details.
+   */
+  function calculateQuestionScore(question) {
+    // Create the same score shape used by whole-quiz rendering.
+    const score = {
+      correct: 0,
+      total: 0,
+      missing: 0,
+      unknown: 0,
+      details: []
+    };
+
+    // Reuse the question metadata already stored on the rendered element.
+    const questionNumber = Number(question.dataset.questionIndex || "0") + 1;
+    const correctLetters = normalizeLetterList(question.dataset.correctLetters || "");
+    const selectedLetters = getSelectedLetters(question);
+
+    // Track questions where the output did not include an answer key.
+    if (correctLetters.length === 0) {
+      score.unknown += 1;
+      score.details.push(createScoreDetail(question, questionNumber, "unknown", selectedLetters, correctLetters));
+      return score;
+    }
+
+    // Count this answer-key-backed question in the total.
+    score.total = 1;
+
+    // Report unanswered questions separately from wrong selections.
+    if (selectedLetters.length === 0) {
+      score.missing = 1;
+      score.details.push(createScoreDetail(question, questionNumber, "unanswered", selectedLetters, correctLetters));
+      return score;
+    }
+
+    // Compare the selected options to the hidden answer key.
+    if (areLetterSetsEqual(selectedLetters, correctLetters)) {
+      score.correct = 1;
+      score.details.push(createScoreDetail(question, questionNumber, "correct", selectedLetters, correctLetters));
+    } else {
+      score.details.push(createScoreDetail(question, questionNumber, "incorrect", selectedLetters, correctLetters));
+    }
+
+    // Return all details needed by the shared renderer.
     return score;
   }
 
