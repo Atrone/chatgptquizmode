@@ -311,6 +311,39 @@
         continue;
       }
 
+      // Ignore organizational headings so they do not become part of prompts.
+      if (isQuestionSectionHeading(line)) {
+        continue;
+      }
+
+      const standaloneQuestionLabel = parseStandaloneQuestionLabel(line);
+
+      // Start a fresh prompt when ChatGPT emits "Question 1:" on its own line.
+      if (standaloneQuestionLabel) {
+        if (currentQuestion && currentQuestion.options.length > 0) {
+          appendQuestionIfValid(questions, currentQuestion);
+          lastQuestion = currentQuestion;
+          currentQuestion = null;
+        }
+        pendingPromptLines = [];
+        activeRationaleQuestion = null;
+        isCollectingNumberedRationales = false;
+        continue;
+      }
+
+      const numberedAnswerEntry = parseNumberedAnswerEntry(line);
+
+      // Capture answer-key sections that repeat "Question N Answer: X".
+      if (numberedAnswerEntry) {
+        appendQuestionIfValid(questions, currentQuestion);
+        lastQuestion = currentQuestion;
+        currentQuestion = null;
+        pendingPromptLines = [];
+        activeRationaleQuestion = assignNumberedAnswerEntry(questions, answerKeyGroups, numberedAnswerEntry);
+        isCollectingNumberedRationales = false;
+        continue;
+      }
+
       const answerEntry = parseAnswerEntry(line);
 
       // Save hidden answer keys for local scoring without rendering them.
@@ -543,6 +576,89 @@
   }
 
   /**
+   * Detects headings that only organize batches of generated questions.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {boolean} True when the line is only a question section heading.
+   */
+  function isQuestionSectionHeading(line) {
+    // Match exact headings like "Questions" and "Questions 1-10".
+    return /^questions(?:\s+\d+\s*[-–—]\s*\d+)?$/i.test(line);
+  }
+
+  /**
+   * Parses standalone labels such as "Question 1:" before the actual stem.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {{index: number} | null} Zero-based question index or null.
+   */
+  function parseStandaloneQuestionLabel(line) {
+    // Match a label-only question marker without treating it as prompt text.
+    const match = line.match(/^question\s*(\d+)\s*[:\.\)]\s*$/i);
+    if (!match) {
+      return null;
+    }
+
+    // Convert the visible number into the same zero-based index used elsewhere.
+    return {
+      index: Math.max(0, Number(match[1]) - 1)
+    };
+  }
+
+  /**
+   * Parses answer-key lines that identify the target question by number.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {{index: number, letters: string[], rationale: string} | null} Parsed numbered answer entry.
+   */
+  function parseNumberedAnswerEntry(line) {
+    // Match forms like "Question 1 Answer: B - Side effect".
+    const match = line.match(/^(?:question\s*)?(\d+)\s*(?:answer|answers|correct answer|correct answers|correct option|correct options|solution)\s*[:\-]\s*(.+)$/i);
+    if (!match) {
+      return null;
+    }
+
+    // Reuse the regular answer/rationale splitter for the answer body.
+    const body = splitAnswerBodyRationale(match[2].trim());
+    const groups = parseAnswerGroups(body.answerText);
+    if (groups.length === 0) {
+      return null;
+    }
+
+    // Return the first group because the question number already scopes the entry.
+    return {
+      index: Math.max(0, Number(match[1]) - 1),
+      letters: groups[0],
+      rationale: body.rationale
+    };
+  }
+
+  /**
+   * Assigns a numbered answer entry to an existing question or deferred answer key.
+   *
+   * @param {Array<{correctLetters: string[], isSata: boolean, rationale: string}>} questions - Parsed question list.
+   * @param {string[][]} answerKeyGroups - Deferred answer groups by question index.
+   * @param {{index: number, letters: string[], rationale: string}} entry - Parsed numbered answer entry.
+   * @returns {{rationale: string} | null} Question that should receive following rationale lines.
+   */
+  function assignNumberedAnswerEntry(questions, answerKeyGroups, entry) {
+    // Look up the question when the answer section appears after parsed prompts.
+    const question = questions[entry.index] || null;
+
+    // Keep the answer available even if the question is assigned later.
+    answerKeyGroups[entry.index] = entry.letters;
+
+    // Apply directly to already parsed questions so scoring works immediately.
+    if (question) {
+      assignAnswerLetters(question, entry.letters);
+      assignRationale(question, entry.rationale);
+    }
+
+    // Let subsequent plain lines become the rationale for this same question.
+    return question;
+  }
+
+  /**
    * Separates a trailing rationale from an answer-key body when ChatGPT includes one.
    *
    * @param {string} body - Text after the answer-key prefix.
@@ -654,6 +770,10 @@
 
     // Apply answer groups by question order without overwriting explicit answers.
     for (let index = 0; index < questions.length && index < answerGroups.length; index += 1) {
+      if (!answerGroups[index]) {
+        continue;
+      }
+
       if (questions[index].correctLetters.length === 0) {
         questions[index].correctLetters = answerGroups[index];
         questions[index].isSata = questions[index].isSata || answerGroups[index].length > 1;
