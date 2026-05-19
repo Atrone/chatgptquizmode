@@ -271,5 +271,23 @@ function getErrorMessage(error) {
   return String(error || "Payment status is unavailable.");
 }
 
-chrome.runtime.onInstalled.addListener(handleInstalled);
-chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+// Expose private helpers only when the unit-test harness explicitly asks for them.
+if (globalThis.__MCQ_RADIO_EXTENSION_ENABLE_TEST_API__) {
+  globalThis.__mcqRadioExtensionBackgroundTestApi = {
+    handleInstalled,
+    handleRuntimeMessage,
+    handlePaywallMessage,
+    getAccessState,
+    createExtPayClient,
+    getEarliestDate,
+    ensureLocalInstalledAt,
+    normalizeDate,
+    getTrialRemainingMs,
+    createAccessResponse,
+    createErrorResponse,
+    getErrorMessage
+  };
+} else {
+  chrome.runtime.onInstalled.addListener(handleInstalled);
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+}
