@@ -7,8 +7,7 @@
   const CONTEXT_ELEMENT_ID = "mcq-radio-extension-conversation-context";
   const STREAM_IDLE_DELAY_MS = 1200;
   const ACCESS_CACHE_DURATION_MS = 30000;
-  const OPTION_PATTERN = /^([A-H])[\.\):\-]\s+(.+)$/i;
-  const QUESTION_START_PATTERN = /^(?:question\s*)?(\d+)(?:(?:[\.\)]\s*)|(?:\s*[:\-]\s+))(.+)$/i;
+  const OPTION_PATTERN = /^(?:(?:[-*•]|\d+[\.\)])\s*)?([A-H])[\.\):\-]\s+(.+)$/i;
   const SATA_PATTERN = /\b(?:sata|select all that apply|choose all that apply|multiple response|multi-select|multiple select)\b/i;
   const INLINE_STOP_PATTERN = /\s+(?:rationale|explanation|ordered response|correct order|next steps|answer key|answers?)\s*[:\-—]/i;
   const ANSWER_PATTERNS = [
@@ -404,7 +403,7 @@
       }
 
       const option = parseOptionLine(line);
-      const questionStart = line.match(QUESTION_START_PATTERN);
+      const questionStart = parseQuestionStart(line);
 
       // Append plain continuation lines after a "Rationale:" label.
       if (activeRationaleQuestion && !option && !questionStart) {
@@ -418,7 +417,7 @@
 
       // Option lines start or continue a question group.
       if (option) {
-        const questionMatch = option.text.match(QUESTION_START_PATTERN);
+        const questionMatch = parseQuestionStart(option.text);
         const shouldStartNewQuestion =
           !currentQuestion || option.letter === "A" || questionMatch;
 
@@ -440,12 +439,12 @@
         appendQuestionIfValid(questions, currentQuestion);
         lastQuestion = currentQuestion;
         currentQuestion = null;
-        pendingPromptLines = questionStart ? [questionStart[2].trim()] : [line];
+        pendingPromptLines = questionStart ? [questionStart.text] : [line];
         continue;
       }
 
       // Otherwise, the line is part of the upcoming question prompt.
-      pendingPromptLines.push(questionStart ? questionStart[2].trim() : line);
+      pendingPromptLines.push(questionStart ? questionStart.text : line);
     }
 
     // Flush the final parsed question, if it has enough options.
@@ -495,18 +494,47 @@
   }
 
   /**
+   * Parses a question starter line without misreading answer text like "1:1 ratio".
+   *
+   * @param {string} line - Trimmed line or option text to inspect.
+   * @returns {{index: number, text: string} | null} Parsed question number and stem.
+   */
+  function parseQuestionStart(line) {
+    // Prefer explicit labels because they can safely omit spacing after a colon.
+    const labelledMatch = line.match(/^(?:question|q)\s*(\d+)\s*[\.\):\-]?\s*(.+)$/i);
+    if (labelledMatch) {
+      return {
+        index: Math.max(0, Number(labelledMatch[1]) - 1),
+        text: labelledMatch[2].trim()
+      };
+    }
+
+    // Match numbered question lines while requiring safe punctuation/spacing.
+    const numberedMatch = line.match(/^(\d+)(?:(?:[\.\)]\s*)|(?:\s*[:\-]\s+))(.+)$/i);
+    if (!numberedMatch) {
+      return null;
+    }
+
+    // Return normalized data so callers do not depend on regex capture indexes.
+    return {
+      index: Math.max(0, Number(numberedMatch[1]) - 1),
+      text: numberedMatch[2].trim()
+    };
+  }
+
+  /**
    * Creates a parsed question shell and strips inline answer keys from the prompt.
    *
    * @param {string[]} promptLines - Lines seen before the option group.
    * @param {number} questionIndex - Zero-based parsed question index.
-   * @param {RegExpMatchArray | null} questionMatch - Optional numbered question match.
+   * @param {{text: string} | null} questionMatch - Optional numbered question match.
    * @returns {{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}} Parsed question shell.
    */
   function createQuestion(promptLines, questionIndex, questionMatch = null) {
     // Build the raw prompt first so inline answer keys can be removed in one place.
     const rawPrompt = createPrompt(promptLines, questionIndex, questionMatch);
     const inlineAnswer = extractInlineAnswerKey(rawPrompt);
-    const promptCueLines = [...promptLines, questionMatch?.[2] || ""];
+    const promptCueLines = [...promptLines, questionMatch?.text || ""];
 
     // Return the question metadata used by rendering and scoring.
     return {
@@ -594,7 +622,7 @@
    */
   function parseStandaloneQuestionLabel(line) {
     // Match a label-only question marker without treating it as prompt text.
-    const match = line.match(/^question\s*(\d+)\s*[:\.\)]\s*$/i);
+    const match = line.match(/^(?:(?:question|q)\s*)?(\d+)\s*[:\.\)\-]?\s*$/i);
     if (!match) {
       return null;
     }
@@ -921,13 +949,13 @@
    *
    * @param {string[]} promptLines - Lines seen before the option group.
    * @param {number} questionIndex - Zero-based parsed question index.
-   * @param {RegExpMatchArray | null} questionMatch - Optional numbered question match.
+   * @param {{text: string} | null} questionMatch - Optional numbered question match.
    * @returns {string} Display prompt.
    */
   function createPrompt(promptLines, questionIndex, questionMatch = null) {
     // Prefer a question marker embedded in a malformed option line.
     if (questionMatch) {
-      return questionMatch[2].trim();
+      return questionMatch.text.trim();
     }
 
     // Use the most recent prompt lines so long explanations do not overwhelm the UI.
