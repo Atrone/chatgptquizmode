@@ -8,7 +8,7 @@
   const STREAM_IDLE_DELAY_MS = 1200;
   const ACCESS_CACHE_DURATION_MS = 30000;
   const OPTION_PATTERN = /^([A-H])[\.\):\-]\s+(.+)$/i;
-  const QUESTION_START_PATTERN = /^(?:question\s*)?(\d+)[\.\)]\s*(.+)$/i;
+  const QUESTION_START_PATTERN = /^(?:question\s*)?(\d+)(?:(?:[\.\)]\s*)|(?:\s*[:\-]\s+))(.+)$/i;
   const SATA_PATTERN = /\b(?:sata|select all that apply|choose all that apply|multiple response|multi-select|multiple select)\b/i;
   const INLINE_STOP_PATTERN = /\s+(?:rationale|explanation|ordered response|correct order|next steps|answer key|answers?)\s*[:\-—]/i;
   const ANSWER_PATTERNS = [
@@ -1660,7 +1660,7 @@
 
     // Score every question that has parsed correct answers.
     const score = calculateQuizScore(quiz);
-    const result = quiz.querySelector(`.${EXTENSION_PREFIX}-score-result`);
+    const result = button.parentElement?.querySelector(`.${EXTENSION_PREFIX}-score-result`);
     if (!result) {
       return;
     }
