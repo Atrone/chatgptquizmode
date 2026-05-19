@@ -251,6 +251,10 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   }, { status: "trial", trialRemainingMs: 3600000 });
   document.body.appendChild(quiz);
   assert.equal(quiz.querySelectorAll(`.${EXTENSION_PREFIX}-question`).length, 2);
+  assert.deepEqual(
+    Array.from(quiz.querySelectorAll(`.${EXTENSION_PREFIX}-question-number`)).map((node) => node.textContent),
+    ["1", "2"]
+  );
   assert.equal(quiz.querySelectorAll("input[type='radio']:checked").length, 1);
   assert.equal(quiz.querySelectorAll("input[type='checkbox']:checked").length, 2);
   assert.match(quiz.textContent, /left in your free trial/);

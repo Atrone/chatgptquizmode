@@ -1506,6 +1506,12 @@
     wrapper.dataset.rationale = question.rationale || "";
     wrapper.dataset.isSata = String(question.isSata);
 
+    // Add the question number on its own line above the prompt.
+    const number = document.createElement("div");
+    number.className = `${EXTENSION_PREFIX}-question-number`;
+    number.textContent = String(questionIndex + 1);
+    wrapper.appendChild(number);
+
     // Show the prompt above the selectable answer options.
     const prompt = document.createElement("div");
     prompt.className = `${EXTENSION_PREFIX}-prompt`;

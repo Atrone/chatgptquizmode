@@ -74,6 +74,11 @@
   margin-top: 0;
 }
 
+.mcq-radio-extension-question-number {
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
 .mcq-radio-extension-prompt {
   font-weight: 600;
   margin-bottom: 0.45rem;
