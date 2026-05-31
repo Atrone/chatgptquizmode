@@ -177,6 +177,65 @@ test("parses MCQ, SATA, answer-key, and rationale variants", () => {
   `);
   assert.deepEqual(toPlain(grouped.map((question) => question.correctLetters)), [["B"], ["A"]]);
   assert.deepEqual(toPlain(grouped.map((question) => question.rationale)), ["Beta is correct.", "Gamma is correct."]);
+
+  // Verify final answer sections with numbered lines assign keys to every question.
+  const finalNumberedKey = api.parseMultipleChoiceQuestions(`
+    1. First final-key question?
+    A. Alpha
+    B. Beta
+    2. Second final-key question?
+    A. Gamma
+    B. Delta
+    Answers:
+    1. B
+    2. A
+  `);
+  assert.deepEqual(toPlain(finalNumberedKey.map((question) => question.correctLetters)), [["B"], ["A"]]);
+
+  // Verify compact whitespace-separated answer keys still map across questions.
+  const compactFinalKey = api.parseMultipleChoiceQuestions(`
+    1. First compact-key question?
+    A. Alpha
+    B. Beta
+    2. Second compact-key question?
+    A. Gamma
+    B. Delta
+    Answer key: 1. B 2. A
+  `);
+  assert.deepEqual(toPlain(compactFinalKey.map((question) => question.correctLetters)), [["B"], ["A"]]);
+});
+
+test("keeps pharmacokinetic range options attached to their questions", () => {
+  // Load parser helpers from the real content script.
+  const { api } = loadContentHarness();
+
+  // Verify compact and spaced ranges do not become accidental question starts.
+  const questions = api.parseMultipleChoiceQuestions(`
+    32. What is the listed onset of atovaquone alone? A. 8 - 24 hr B. 1 - 2 weeks C. 1.5 - 4 hr D. Less than 24 hr Answer: A. 8 - 24 hr Rationale: Atovaquone alone has an onset of 8 - 24 hours.
+    33. What is the listed peak/Tmax of atovaquone alone?
+    A. 24 - 96 hr
+    B. 1 - 2 hr
+    C. 17 hr
+    D. 1.5 - 4 hr
+    Answer: A. 24 - 96 hr
+    Rationale: Atovaquone alone peaks at 24 - 96 hours.
+    34. What is the listed half-life of doxycycline?
+    A. 18 - 22 hr
+    B. 3 - 5 days
+    C. 40 days
+    D. 21 - 22 days
+    Answer: A. 18 - 22 hr
+    Rationale: Doxycycline's T1/2 is 18 - 22 hours.
+  `);
+
+  assert.equal(questions.length, 3);
+  assert.deepEqual(toPlain(questions.map((question) => question.correctLetters)), [["A"], ["A"], ["A"]]);
+  assert.deepEqual(toPlain(questions.map((question) => question.options.map((option) => option.letter))), [
+    ["A", "B", "C", "D"],
+    ["A", "B", "C", "D"],
+    ["A", "B", "C", "D"]
+  ]);
+  assert.equal(questions[2].options[3].text, "21 - 22 days");
 });
 
 test("covers low-level parsing and formatting helpers", () => {
@@ -200,6 +259,12 @@ test("covers low-level parsing and formatting helpers", () => {
     groups: [["A", "C"]],
     isPotentialSequence: true,
     rationale: ""
+  });
+  assert.equal(api.isAnswerKeyHeading("Answers:"), true);
+  assert.deepEqual(toPlain(api.parseNumberedAnswerKeyEntry("2. D - because it fits")), {
+    index: 1,
+    letters: ["D"],
+    rationale: "because it fits"
   });
   assert.deepEqual(toPlain(api.parseNumberedAnswerEntry("Question 2 Answer: D - because it fits")), {
     index: 1,

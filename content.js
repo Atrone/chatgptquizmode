@@ -290,8 +290,8 @@
    * @returns {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}>} Parsed questions.
    */
   function parseMultipleChoiceQuestions(text) {
-    // Normalize line endings and remove empty lines that split markdown paragraphs.
-    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    // Normalize line endings and recover markers collapsed onto one rendered line.
+    const lines = normalizeMcqLines(text);
     const questions = [];
     let pendingPromptLines = [];
     let currentQuestion = null;
@@ -299,6 +299,7 @@
     let answerKeyGroups = [];
     let rationaleGroups = [];
     let activeRationaleQuestion = null;
+    let isCollectingAnswerKey = false;
     let isCollectingNumberedRationales = false;
 
     // Walk line by line to preserve question prompts that appear before option A.
@@ -326,6 +327,7 @@
         }
         pendingPromptLines = [];
         activeRationaleQuestion = null;
+        isCollectingAnswerKey = false;
         isCollectingNumberedRationales = false;
         continue;
       }
@@ -339,6 +341,19 @@
         currentQuestion = null;
         pendingPromptLines = [];
         activeRationaleQuestion = assignNumberedAnswerEntry(questions, answerKeyGroups, numberedAnswerEntry);
+        isCollectingAnswerKey = false;
+        isCollectingNumberedRationales = false;
+        continue;
+      }
+
+      // Enter answer-key mode for headings followed by numbered entries.
+      if (isAnswerKeyHeading(line)) {
+        appendQuestionIfValid(questions, currentQuestion);
+        lastQuestion = currentQuestion;
+        currentQuestion = null;
+        pendingPromptLines = [];
+        activeRationaleQuestion = null;
+        isCollectingAnswerKey = true;
         isCollectingNumberedRationales = false;
         continue;
       }
@@ -349,6 +364,7 @@
       if (answerEntry) {
         const targetQuestion = currentQuestion || lastQuestion;
         activeRationaleQuestion = null;
+        isCollectingAnswerKey = /^\s*(?:answers|answer key)\s*[:\-]/i.test(line);
         isCollectingNumberedRationales = false;
 
         // Treat plural unnumbered answer keys as a sequence unless the current question is SATA.
@@ -365,6 +381,16 @@
         continue;
       }
 
+      // Capture final keys formatted as "Answers:" followed by "1. B" lines.
+      if (isCollectingAnswerKey) {
+        const numberedAnswerKeyEntry = parseNumberedAnswerKeyEntry(line);
+        if (numberedAnswerKeyEntry) {
+          activeRationaleQuestion = assignNumberedAnswerEntry(questions, answerKeyGroups, numberedAnswerKeyEntry);
+          isCollectingNumberedRationales = false;
+          continue;
+        }
+      }
+
       const rationaleEntry = parseRationaleEntry(line);
 
       // Stop option parsing when rationale or follow-up sections begin.
@@ -374,6 +400,7 @@
         currentQuestion = null;
         pendingPromptLines = [];
         activeRationaleQuestion = lastQuestion;
+        isCollectingAnswerKey = false;
         isCollectingNumberedRationales = rationaleEntry.isPlural;
         if (rationaleEntry.text) {
           assignRationale(lastQuestion, rationaleEntry.text);
@@ -388,6 +415,7 @@
         currentQuestion = null;
         pendingPromptLines = [];
         activeRationaleQuestion = null;
+        isCollectingAnswerKey = false;
         isCollectingNumberedRationales = false;
         continue;
       }
@@ -413,11 +441,12 @@
 
       // A new question or option ends the current freeform rationale capture.
       activeRationaleQuestion = null;
+      isCollectingAnswerKey = false;
       isCollectingNumberedRationales = false;
 
       // Option lines start or continue a question group.
       if (option) {
-        const questionMatch = parseQuestionStart(option.text);
+        const questionMatch = parseEmbeddedQuestionStart(option.text);
         const shouldStartNewQuestion =
           !currentQuestion || option.letter === "A" || questionMatch;
 
@@ -479,6 +508,97 @@
   }
 
   /**
+   * Normalizes rendered assistant text into parser-friendly logical lines.
+   *
+   * @param {string} text - Raw visible text from the assistant response.
+   * @returns {string[]} Trimmed lines with compact MCQ markers split apart.
+   */
+  function normalizeMcqLines(text) {
+    // Normalize platform line endings before recovering collapsed rendered markers.
+    const rawLines = text.replace(/\r\n?/g, "\n").split("\n");
+
+    // Expand each source line independently so existing line breaks remain meaningful.
+    return rawLines.flatMap((line) => splitCompactMcqLine(line));
+  }
+
+  /**
+   * Splits one rendered line when question, option, answer, or rationale markers collapsed together.
+   *
+   * @param {string} line - One raw line from the assistant response.
+   * @returns {string[]} Logical parser lines recovered from the rendered line.
+   */
+  function splitCompactMcqLine(line) {
+    // Work with trimmed text because the parser ignores surrounding whitespace anyway.
+    const trimmedLine = line.trim();
+    const boundaries = [];
+    const markerPattern = /(?:question|q)\s*\d+\s*[\.\):\-]\s+|\d+[\.\)]\s+|[A-H][\.\):\-]\s+|(?:answer|answers|correct answer|correct answers|correct option|correct options|solution|answer key|rationales?|explanations?)\s*[:\-—]\s*/gi;
+
+    // Blank input stays as an ignored blank line for the caller's existing behavior.
+    if (!trimmedLine) {
+      return [trimmedLine];
+    }
+
+    // Find markers that begin a logical MCQ segment without splitting answer text like "Answer: B. ...".
+    for (const match of trimmedLine.matchAll(markerPattern)) {
+      const index = match.index || 0;
+      const marker = match[0];
+
+      // Markers in the middle of words are ordinary text, not MCQ boundaries.
+      if (index > 0 && !/\s/.test(trimmedLine[index - 1])) {
+        continue;
+      }
+
+      // Keep answer letters and grouped key numbers attached to answer-key lines.
+      if (isAnswerContentMarkerInsideCurrentSegment(trimmedLine, boundaries, index, marker)) {
+        continue;
+      }
+
+      // Record unique boundary positions so slicing can preserve the marker text.
+      if (!boundaries.includes(index)) {
+        boundaries.push(index);
+      }
+    }
+
+    // Preserve prompt text that appears before compact option markers.
+    if (boundaries.length > 1 && boundaries[0] > 0) {
+      boundaries.unshift(0);
+    }
+
+    // A line with zero or one boundary is already safe for the existing parser.
+    if (boundaries.length <= 1) {
+      return [trimmedLine];
+    }
+
+    // Slice each compact segment and drop empty fragments created by leading spaces.
+    return boundaries
+      .map((start, index) => trimmedLine.slice(start, boundaries[index + 1]).trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * Detects option letters or grouped numbers that belong to an answer label in the same compact line.
+   *
+   * @param {string} line - Full compact rendered line.
+   * @param {number[]} boundaries - Boundary indexes already accepted for the line.
+   * @param {number} markerIndex - Candidate answer-content marker index.
+   * @param {string} marker - Candidate MCQ marker text.
+   * @returns {boolean} True when the marker belongs to answer content, not a new segment.
+   */
+  function isAnswerContentMarkerInsideCurrentSegment(line, boundaries, markerIndex, marker) {
+    // Inspect only the text since the most recent accepted boundary.
+    const segmentStart = boundaries.length > 0 ? boundaries[boundaries.length - 1] : 0;
+    const segmentText = line.slice(segmentStart, markerIndex).trim();
+
+    // Only option letters and grouped numeric keys are ambiguous inside answer text.
+    if (!/^(?:[A-H][\.\):\-]|\d+[\.\)])\s+/i.test(marker)) {
+      return false;
+    }
+
+    // Match labels such as "Answer:" or "Answer key:" before answer content.
+    return /^(?:answer|answers|correct answer|correct answers|correct option|correct options|solution|answer key)\s*[:\-]/i.test(segmentText);
+  }
+
+  /**
    * Removes rationale or follow-up text accidentally included on an option line.
    *
    * @param {string} text - Raw option text.
@@ -520,6 +640,22 @@
       index: Math.max(0, Number(numberedMatch[1]) - 1),
       text: numberedMatch[2].trim()
     };
+  }
+
+  /**
+   * Parses only explicit question labels embedded after an option marker.
+   *
+   * @param {string} text - Option text to inspect for a nested question label.
+   * @returns {{index: number, text: string} | null} Parsed embedded question start.
+   */
+  function parseEmbeddedQuestionStart(text) {
+    // Numeric ranges and durations inside options are answer text, not question starts.
+    if (!/^(?:question|q)\s*\d+/i.test(text)) {
+      return null;
+    }
+
+    // Reuse the regular question parser for explicit "Question N:" option text.
+    return parseQuestionStart(text);
   }
 
   /**
@@ -601,6 +737,45 @@
 
     // Return grouped letters for single MCQ, SATA, or ordered answer keys.
     return { groups, isPotentialSequence, rationale: body.rationale };
+  }
+
+  /**
+   * Detects an answer-key heading that introduces numbered answer lines.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {boolean} True when following lines should be parsed as answer keys.
+   */
+  function isAnswerKeyHeading(line) {
+    // Match heading-only labels like "Answers:" or "Answer key".
+    return /^(?:answers?|answer key|correct answers?|correct options?|solutions?)\s*[:\-]?\s*$/i.test(line);
+  }
+
+  /**
+   * Parses one numbered answer-key item from a final answer section.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {{index: number, letters: string[], rationale: string} | null} Parsed answer-key item.
+   */
+  function parseNumberedAnswerKeyEntry(line) {
+    // Reuse question-number parsing so "1. B" and "Question 1: B" share behavior.
+    const questionStart = parseQuestionStart(line);
+    if (!questionStart) {
+      return null;
+    }
+
+    // Split any short explanation away from the answer letters.
+    const body = splitAnswerBodyRationale(questionStart.text);
+    const groups = parseAnswerGroups(body.answerText);
+    if (groups.length === 0) {
+      return null;
+    }
+
+    // Return the first group because the number scopes this entry to one question.
+    return {
+      index: questionStart.index,
+      letters: groups[0],
+      rationale: body.rationale
+    };
   }
 
   /**
@@ -726,7 +901,7 @@
    */
   function hasGroupedAnswerNumbers(body) {
     // Match numbered keys like "1. A", "2: C", or "Question 3) B".
-    return /(?:^|[;,]\s*)(?:question\s*)?\d+\s*[\.\):\-]\s*[A-H]/i.test(body);
+    return /(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-]\s*(?=[A-H]\b)/i.test(body);
   }
 
   /**
@@ -737,12 +912,17 @@
    */
   function parseAnswerGroups(body) {
     // Detect grouped keys like "1. A, C; 2. B" before treating letters as one SATA key.
-    const groupedMatches = [...body.matchAll(/(?:^|[;,]\s*)(?:question\s*)?\d+\s*[\.\):\-]\s*([A-H](?:\s*(?:,|and|&)\s*[A-H])*)/gi)];
+    const groupedMatches = [...body.matchAll(/(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-]\s*(?=[A-H]\b)/gi)];
 
     // Return each numbered group as its own question's correct letters.
     if (groupedMatches.length > 0) {
       return groupedMatches
-        .map((match) => extractUniqueLetters(match[1]))
+        .map((match, index) => {
+          // Slice between numbered markers so whitespace-separated keys stay grouped.
+          const answerStart = (match.index || 0) + match[0].length;
+          const answerEnd = groupedMatches[index + 1]?.index ?? body.length;
+          return extractUniqueLetters(body.slice(answerStart, answerEnd));
+        })
         .filter((letters) => letters.length > 0);
     }
 
@@ -2358,6 +2538,8 @@
       createQuestion,
       extractInlineAnswerKey,
       parseAnswerEntry,
+      isAnswerKeyHeading,
+      parseNumberedAnswerKeyEntry,
       isQuestionSectionHeading,
       parseStandaloneQuestionLabel,
       parseNumberedAnswerEntry,
