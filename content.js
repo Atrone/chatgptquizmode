@@ -1301,6 +1301,9 @@
     const header = buildQuizHeader(quizId);
     quiz.appendChild(header);
 
+    // Recommend a prompt format that lets the parser match answers more reliably.
+    quiz.appendChild(buildReliabilityTip());
+
     // Show trial status without interrupting the quiz while access is still valid.
     if (accessState?.status === "trial") {
       quiz.appendChild(buildTrialNotice(accessState));
@@ -1344,6 +1347,23 @@
 
     // Return the assembled quiz header.
     return header;
+  }
+
+  /**
+   * Builds prompt guidance that improves answer-to-question matching reliability.
+   *
+   * @returns {HTMLElement} Reliability guidance element.
+   */
+  function buildReliabilityTip() {
+    // Create a compact tip that remains visible above every generated quiz.
+    const tip = document.createElement("p");
+    tip.className = `${EXTENSION_PREFIX}-reliability-tip`;
+
+    // Preserve the suggested instruction verbatim so users can add it to their prompts.
+    tip.textContent = "If you want better reliability, try adding 'Add answers at the end of each question, not at the end of your entire response' to the end of your prompt";
+
+    // Return the completed guidance element.
+    return tip;
   }
 
   /**

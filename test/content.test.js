@@ -323,6 +323,10 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   assert.equal(quiz.querySelectorAll("input[type='radio']:checked").length, 1);
   assert.equal(quiz.querySelectorAll("input[type='checkbox']:checked").length, 2);
   assert.match(quiz.textContent, /left in your free trial/);
+  assert.equal(
+    quiz.querySelector(`.${EXTENSION_PREFIX}-reliability-tip`).textContent,
+    "If you want better reliability, try adding 'Add answers at the end of each question, not at the end of your entire response' to the end of your prompt"
+  );
 
   // Score the restored selections and render readable feedback.
   const score = api.calculateQuizScore(quiz);
