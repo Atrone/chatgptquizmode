@@ -37,6 +37,7 @@
   line-height: 1.4;
   margin: 0 0 0.7rem;
   opacity: 0.78;
+  white-space: pre-line;
 }
 
 .mcq-radio-extension-score-mode-toggle {

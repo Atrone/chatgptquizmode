@@ -325,7 +325,18 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   assert.match(quiz.textContent, /left in your free trial/);
   assert.equal(
     quiz.querySelector(`.${EXTENSION_PREFIX}-reliability-tip`).textContent,
-    "If you want better reliability, try adding 'Add answers at the end of each question, not at the end of your entire response' to the end of your prompt"
+    `If you want better reliability, try adding 'Add answers at the end of each question (with a short rationale), not at the end of your entire response. Here's an example question outline: Question 1:
+
+A 35-year-old client at 28 weeks’ gestation has pre-eclampsia, fetal growth restriction, and abnormal uteroplacental Doppler findings. Placental examination later shows infarcted areas and acute atherosis. Which explanation best describes the significance of these placental changes?
+
+A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia
+B. They indicate excessive placental blood flow and fetal hyperoxygenation
+C. They result from maternal hypervolemia without endothelial injury
+D. They confirm that pre-eclampsia originated from fetal hypertension
+
+Answer: A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia.
+
+Rationale: Inadequate spiral-artery remodelling leaves placental vessels thick-walled and high resistance. Reduced perfusion promotes hypoxia, acute atherosis, infarction, and impaired fetal growth.' to the end of your prompt`
   );
 
   // Score the restored selections and render readable feedback.
