@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT Quiz Mode</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <h1>ChatGPT Quiz Mode</h1>
+      <label class="toggle-row" for="extension-enabled">
+        <span>
+          <strong>Enable extension</strong>
+          <span id="toggle-description" class="description">Turn quiz controls on or off on ChatGPT.</span>
+        </span>
+        <span class="switch">
+          <input id="extension-enabled" type="checkbox" aria-describedby="toggle-description">
+          <span class="slider" aria-hidden="true"></span>
+        </span>
+      </label>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

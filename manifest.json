@@ -2,10 +2,14 @@
   "manifest_version": 3,
   "name": "ChatGPT Quiz Mode",
   "description": "Detects multiple-choice and SATA answers in ChatGPT outputs, hides answer keys, and adds answer controls.",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "permissions": [
     "storage"
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ChatGPT Quiz Mode"
+  },
   "background": {
     "service_worker": "background.js"
   },

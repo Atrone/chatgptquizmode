@@ -5,6 +5,7 @@
   const QUIZ_ATTRIBUTE = "data-mcq-radio-extension-quiz-id";
   const ORIGINAL_OUTPUT_ATTRIBUTE = "data-mcq-radio-extension-original-output";
   const CONTEXT_ELEMENT_ID = "mcq-radio-extension-conversation-context";
+  const ENABLED_STORAGE_KEY = `${EXTENSION_PREFIX}:enabled`;
   const STREAM_IDLE_DELAY_MS = 1200;
   const ACCESS_CACHE_DURATION_MS = 30000;
   const OPTION_PATTERN = /^(?:(?:[-*•▪◦‣]|\d+[\.\)])\s*)?(?:(?:option|choice)\s+)?(?:\(([A-Z])\)|\[([A-Z])\]|([A-Z])\s*(?:[\.\):\-–—|]|\t+))\s*(.+)$/i;
@@ -23,17 +24,45 @@
   const processingRoots = new WeakSet();
   const pendingProcessingTimers = new WeakMap();
   let accessStateCache = null;
+  let extensionEnabled = true;
+  let pageObserver = null;
+
+  /**
+   * Initializes the extension from its persisted popup setting.
+   *
+   * @returns {Promise<void>} Resolves after the current setting is applied.
+   */
+  async function initialize() {
+    // Treat a missing setting as enabled to preserve existing install behavior.
+    const stored = await chrome.storage.local.get(ENABLED_STORAGE_KEY);
+    extensionEnabled = stored[ENABLED_STORAGE_KEY] !== false;
+
+    // Apply the saved state before scanning any ChatGPT output.
+    if (extensionEnabled) {
+      start();
+    } else {
+      stop();
+    }
+
+    // React immediately when the user changes the switch in the popup.
+    chrome.storage.onChanged.addListener(handleStorageChange);
+  }
 
   /**
    * Starts the extension once the ChatGPT page is ready enough to observe.
    */
   function start() {
+    // Avoid registering duplicate observers and page event listeners.
+    if (pageObserver) {
+      return;
+    }
+
     // Parse anything already visible when the content script loads.
     scanPageForMcqOutputs();
 
     // Watch future streamed responses and route changes in the single-page app.
-    const observer = new MutationObserver(handleMutations);
-    observer.observe(document.body, {
+    pageObserver = new MutationObserver(handleMutations);
+    pageObserver.observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true
@@ -42,6 +71,56 @@
     // Refresh gated outputs after users return from checkout or login tabs.
     window.addEventListener("focus", refreshAccessGatedOutputs);
     document.addEventListener("visibilitychange", refreshAccessGatedOutputs);
+  }
+
+  /**
+   * Stops page processing and restores ChatGPT's original output.
+   */
+  function stop() {
+    // Disconnect observation so disabled mode does not alter future responses.
+    pageObserver?.disconnect();
+    pageObserver = null;
+    window.removeEventListener("focus", refreshAccessGatedOutputs);
+    document.removeEventListener("visibilitychange", refreshAccessGatedOutputs);
+
+    // Cancel delayed processing that was scheduled while the extension was enabled.
+    for (const root of document.querySelectorAll('[data-message-author-role="assistant"]')) {
+      const timer = pendingProcessingTimers.get(root);
+      if (timer) {
+        window.clearTimeout(timer);
+        pendingProcessingTimers.delete(root);
+      }
+
+      // Remove generated controls and restore every extension-hidden source node.
+      removeExistingQuiz(root);
+      restoreAnswerLines(root);
+      root.removeAttribute(PROCESSED_ATTRIBUTE);
+      processedRoots.delete(root);
+    }
+
+    // Remove the hidden selection mirror owned by the extension.
+    document.getElementById(CONTEXT_ELEMENT_ID)?.remove();
+  }
+
+  /**
+   * Applies popup setting changes to the active ChatGPT tab.
+   *
+   * @param {Record<string, chrome.storage.StorageChange>} changes - Changed storage values.
+   * @param {string} areaName - Chrome storage area that emitted the update.
+   */
+  function handleStorageChange(changes, areaName) {
+    // Ignore unrelated keys and storage areas.
+    if (areaName !== "local" || !changes[ENABLED_STORAGE_KEY]) {
+      return;
+    }
+
+    // The extension defaults to enabled unless the popup explicitly stores false.
+    extensionEnabled = changes[ENABLED_STORAGE_KEY].newValue !== false;
+    if (extensionEnabled) {
+      start();
+    } else {
+      stop();
+    }
   }
 
   /**
@@ -208,6 +287,11 @@
    * @param {Element} root - Assistant message content root.
    */
   async function processAssistantRoot(root) {
+    // Disabled mode must leave both existing and newly-streamed output untouched.
+    if (!extensionEnabled) {
+      return;
+    }
+
     // Skip extension UI and roots that were already handled after their final mutation.
     if (processedRoots.has(root) || processingRoots.has(root) || root.hasAttribute(PROCESSED_ATTRIBUTE)) {
       return;
@@ -235,6 +319,11 @@
 
     // Gate the quiz UI after parsing so normal non-MCQ replies stay untouched.
     const accessState = await readAccessState(false);
+    if (!extensionEnabled) {
+      processingRoots.delete(root);
+      restoreAnswerLines(root);
+      return;
+    }
     if (isAccessLocked(accessState)) {
       const paywall = buildPaywallElement(accessState);
       removeStreamingPlaceholder(root);
@@ -249,6 +338,11 @@
     // Build a stable identifier from the conversation URL and response location.
     const quizId = createQuizId(root, questions);
     const savedSelections = await readSelections();
+    if (!extensionEnabled) {
+      processingRoots.delete(root);
+      restoreAnswerLines(root);
+      return;
+    }
     const quiz = buildQuizElement(quizId, questions, savedSelections, accessState);
 
     // Insert the quiz after the rendered markdown content for the response.
@@ -1234,6 +1328,19 @@
       if (isAnswerLine(text)) {
         candidate.classList.add(`${EXTENSION_PREFIX}-hidden-answer`);
       }
+    }
+  }
+
+  /**
+   * Reveals answer-key lines previously hidden by the extension.
+   *
+   * @param {Element} root - Assistant output root.
+   */
+  function restoreAnswerLines(root) {
+    // Remove only the answer visibility class owned by this extension.
+    const hiddenAnswers = root.querySelectorAll(`.${EXTENSION_PREFIX}-hidden-answer`);
+    for (const answer of hiddenAnswers) {
+      answer.classList.remove(`${EXTENSION_PREFIX}-hidden-answer`);
     }
   }
 
@@ -2642,6 +2749,7 @@ Rationale: Inadequate spiral-artery remodelling leaves placental vessels thick-w
       createPrompt,
       isAnswerLine,
       hideAnswerLines,
+      restoreAnswerLines,
       hideOriginalOutput,
       restoreOriginalOutput,
       createQuizId,
@@ -2693,11 +2801,14 @@ Rationale: Inadequate spiral-artery remodelling leaves placental vessels thick-w
       refreshPaywallRoot,
       findAssistantRoot,
       isExtensionMutation,
-      removeExistingQuiz
+      removeExistingQuiz,
+      handleStorageChange,
+      start,
+      stop
     };
   } else if (document.body) {
-    start();
+    initialize();
   } else {
-    document.addEventListener("DOMContentLoaded", start, { once: true });
+    document.addEventListener("DOMContentLoaded", initialize, { once: true });
   }
 })();

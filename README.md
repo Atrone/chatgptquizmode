@@ -14,6 +14,7 @@ A small Manifest V3 Chrome extension that detects multiple-choice-question style
 - Shows answer rationales after scoring when ChatGPT includes rationale or explanation text in the quiz output.
 - Stores selected answers with `chrome.storage.local`, scoped to the current conversation URL.
 - Mirrors the stored selections into a hidden page element named `mcq-radio-extension-conversation-context` so the current conversation page has a DOM-level context copy.
+- Provides an extension popup switch that turns quiz mode on or off immediately.
 - Allows a 24-hour trial after install, then requires a one-time $5 account unlock through ExtensionPay/Stripe.
 
 ## Load In Chrome
