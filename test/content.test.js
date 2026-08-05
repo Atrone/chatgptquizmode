@@ -489,3 +489,273 @@ test("handles paywall helpers, access caching, placeholders, and mutation owners
   // Keep the window referenced so timer-backed helpers use the same DOM globals.
   assert.equal(window.document, document);
 });
+
+/**
+ * Verifies the broad set of option-marker styles emitted by ChatGPT.
+ */
+test("parses common ChatGPT option marker formats", () => {
+  // Load the real parser once and exercise each independently-scoped format.
+  const { api } = loadContentHarness();
+  const formatCases = [
+    { name: "period", options: ["A. Alpha", "B. Beta"] },
+    { name: "closing parenthesis", options: ["A) Alpha", "B) Beta"] },
+    { name: "colon", options: ["A: Alpha", "B: Beta"] },
+    { name: "hyphen", options: ["A - Alpha", "B - Beta"] },
+    { name: "en dash", options: ["A – Alpha", "B – Beta"] },
+    { name: "em dash", options: ["A — Alpha", "B — Beta"] },
+    { name: "parenthesized", options: ["(A) Alpha", "(B) Beta"] },
+    { name: "bracketed", options: ["[A] Alpha", "[B] Beta"] },
+    { name: "dash bullet", options: ["- A. Alpha", "- B. Beta"] },
+    { name: "asterisk bullet", options: ["* A) Alpha", "* B) Beta"] },
+    { name: "unicode bullet", options: ["• A: Alpha", "• B: Beta"] },
+    { name: "numbered bullet", options: ["1. A. Alpha", "2. B. Beta"] },
+    { name: "option label", options: ["Option A: Alpha", "Option B: Beta"] },
+    { name: "choice label", options: ["Choice A — Alpha", "Choice B — Beta"] },
+    { name: "table cells", options: ["A\tAlpha", "B\tBeta"] }
+  ];
+
+  // Every marker style should produce the same normalized question shape.
+  for (const formatCase of formatCases) {
+    const questions = api.parseMultipleChoiceQuestions([
+      `Which option demonstrates the ${formatCase.name} format?`,
+      ...formatCase.options,
+      "Answer: B"
+    ].join("\n"));
+    assert.equal(questions.length, 1, formatCase.name);
+    assert.deepEqual(toPlain(questions[0].options), [
+      { letter: "A", text: "Alpha" },
+      { letter: "B", text: "Beta" }
+    ], formatCase.name);
+    assert.deepEqual(toPlain(questions[0].correctLetters), ["B"], formatCase.name);
+  }
+});
+
+/**
+ * Verifies answer labels, separators, wrappers, and wording used by ChatGPT.
+ */
+test("parses common ChatGPT answer-line formats at each question end", () => {
+  // Exercise answer syntax separately so one malformed case cannot borrow another key.
+  const { api } = loadContentHarness();
+  const answerCases = [
+    "Answer: B",
+    "Answer - B",
+    "Answer – B",
+    "Answer — B",
+    "Answer is B",
+    "Answer(s): B",
+    "Correct answer: B",
+    "Correct Answer is B",
+    "The correct answer is B",
+    "Correct option: B",
+    "Correct choice: B",
+    "Best answer: B",
+    "The best answer is B",
+    "Solution: B",
+    "Key: B",
+    "✅ Answer: B",
+    "✔ Correct answer: (B)",
+    "☑ Answer: [B]",
+    "Answer: Option B",
+    "Answer: Choice B",
+    "Answer: B. Beta",
+    "Answer: B - because Beta is correct.",
+    "Answer: B — since Beta is correct.",
+    "Correct answer: B; Rationale: Beta is correct."
+  ];
+
+  // Each accepted answer line must assign B to the question immediately before it.
+  for (const answerLine of answerCases) {
+    const questions = api.parseMultipleChoiceQuestions([
+      "Which answer syntax is under test?",
+      "A. Alpha",
+      "B. Beta",
+      answerLine
+    ].join("\n"));
+    assert.equal(questions.length, 1, answerLine);
+    assert.deepEqual(toPlain(questions[0].correctLetters), ["B"], answerLine);
+  }
+});
+
+/**
+ * Verifies multi-answer separators and exact SATA normalization.
+ */
+test("parses common ChatGPT SATA answer formats", () => {
+  // Use an explicit multi-select cue so plural answer labels stay question-local.
+  const { api } = loadContentHarness();
+  const sataCases = [
+    "Answers: A, C, D",
+    "Answer(s): A, C, and D",
+    "Correct answers are A and C and D",
+    "Correct options: A; C; D",
+    "Correct choices — A / C / D",
+    "The correct answers are (A), (C), and (D)",
+    "Answer: A & C & D"
+  ];
+
+  // Separator and wrapper differences must not alter the selected answer set.
+  for (const answerLine of sataCases) {
+    const questions = api.parseMultipleChoiceQuestions([
+      "Select all that apply.",
+      "A. Alpha",
+      "B. Beta",
+      "C. Gamma",
+      "D. Delta",
+      answerLine
+    ].join("\n"));
+    assert.equal(questions.length, 1, answerLine);
+    assert.equal(questions[0].isSata, true, answerLine);
+    assert.deepEqual(toPlain(questions[0].correctLetters), ["A", "C", "D"], answerLine);
+  }
+});
+
+/**
+ * Verifies question labels and compact layouts without final-response answer keys.
+ */
+test("keeps answers attached to each question across layout variants", () => {
+  // Combine realistic layouts to expose state leakage between adjacent questions.
+  const { api } = loadContentHarness();
+  const questions = api.parseMultipleChoiceQuestions(`
+    Multiple-Choice Questions:
+    Question 1 — Which value is first?
+    A. Alpha
+    B. Beta
+    Answer: A
+    Q2) Which value is second? A) Alpha B) Beta Correct answer is B
+    3: Which value is third?
+    (A) Alpha
+    (B) Beta
+    Solution — A
+    Question 4:
+    Which value is fourth?
+    Option X: X-ray
+    Option Y: Yankee
+    Best answer: Y
+  `);
+
+  // Every key must remain scoped to the preceding question rather than a final key.
+  assert.equal(questions.length, 4);
+  assert.deepEqual(toPlain(questions.map((question) => question.correctLetters)), [["A"], ["B"], ["A"], ["Y"]]);
+  assert.deepEqual(toPlain(questions.map((question) => question.options.map((option) => option.letter))), [
+    ["A", "B"],
+    ["A", "B"],
+    ["A", "B"],
+    ["X", "Y"]
+  ]);
+});
+
+/**
+ * Verifies answer metadata, rationale boundaries, and parser false-positive guards.
+ */
+test("handles inline keys, rationales, and non-MCQ lookalikes", () => {
+  // Load pure parser helpers for boundary-focused cases.
+  const { api } = loadContentHarness();
+  const inline = api.parseMultipleChoiceQuestions(`
+    Which letters apply? (Answer(s): A / C)
+    A. Alpha
+    B. Beta
+    C. Gamma
+  `);
+  assert.deepEqual(toPlain(inline[0].correctLetters), ["A", "C"]);
+  assert.equal(inline[0].isSata, true);
+  assert.equal(inline[0].prompt, "Which letters apply?");
+
+  // Multiline rationale text should belong only to the completed question.
+  const rationale = api.parseMultipleChoiceQuestions(`
+    Which value is correct?
+    A. Alpha
+    B. Beta
+    Answer: B
+    Rationale:
+    Beta is correct for this example.
+    It remains correct on a second line.
+  `);
+  assert.equal(rationale[0].rationale, "Beta is correct for this example. It remains correct on a second line.");
+
+  // Lettered prose without two options and ordinary numeric values are not questions.
+  assert.equal(api.parseMultipleChoiceQuestions("A. This is a single outline item.\nAnswer: A").length, 0);
+  const numericText = api.parseMultipleChoiceQuestions(`
+    Which ratio is expected?
+    A. 1:1 ratio
+    B. 2:1 ratio
+    Answer: A
+  `);
+  assert.equal(numericText.length, 1);
+  assert.deepEqual(toPlain(numericText[0].options.map((option) => option.text)), ["1:1 ratio", "2:1 ratio"]);
+});
+
+/**
+ * Verifies the custom nursing GPT's answer-with-rationales output contract.
+ */
+test("parses Answer with Rationales sections without creating rationale questions", () => {
+  // Reproduce the heading and lettered distractor explanations from the reported GPT.
+  const { api } = loadContentHarness();
+  const questions = api.parseMultipleChoiceQuestions(`
+    Question 1: A 72-year-old client is 2 hours postoperative after abdominal surgery. The client has a blood pressure of 84/48 mm Hg, heart rate 124/min, and cool, clammy skin. The client is increasingly restless and the urine output has fallen to 10 mL/hr. Which action should the nurse take first?
+    A. Reassess the urine output in 30 minutes
+    B. Activate the rapid response team
+    C. Administer the prescribed oral analgesic
+    D. Assist the client into a high-Fowler position
+    Answer with Rationales
+    Correct Answer: B
+    Rationale:
+    A. Reassessment delays treatment of active deterioration.
+    B. Rapid intervention is required for findings consistent with shock.
+    C. Oral medication does not address the immediate instability.
+    D. Upright positioning may further reduce venous return.
+
+    Question 2: A 6-year-old client with asthma is speaking in one-word phrases. Respirations are 38/min, oxygen saturation is 86%, and breath sounds are becoming diminished. Which intervention is the priority?
+    A. Encourage oral fluids
+    B. Obtain a routine peak-flow measurement
+    C. Apply oxygen and prepare a rapid-acting bronchodilator
+    D. Teach pursed-lip breathing
+    Answer with Rationales:
+    Correct answer is C
+    Rationales:
+    A. Fluids may be appropriate later but do not correct severe hypoxemia.
+    B. Testing must not delay stabilization.
+    C. Oxygen and bronchodilation address the immediate breathing threat.
+    D. Teaching is inappropriate during severe respiratory distress.
+  `);
+
+  // Only the two clinical items should render and each must retain its local key.
+  assert.equal(questions.length, 2);
+  assert.deepEqual(toPlain(questions.map((question) => question.correctLetters)), [["B"], ["C"]]);
+  assert.deepEqual(toPlain(questions.map((question) => question.options.length)), [4, 4]);
+  assert.match(questions[0].rationale, /A\. Reassessment delays treatment/);
+  assert.match(questions[0].rationale, /D\. Upright positioning/);
+  assert.match(questions[1].rationale, /C\. Oxygen and bronchodilation/);
+});
+
+/**
+ * Verifies combined answer-and-rationale labels with common conjunctions.
+ */
+test("parses combined answer and rationale labels", () => {
+  // Cover compact variants that place the correct letter on the heading line.
+  const { api } = loadContentHarness();
+  const combinedLabels = [
+    "Answer and Rationale: B",
+    "Answer with Rationale: B",
+    "Answer & Rationale: B",
+    "Answer/Rationale: B",
+    "Correct Answer and Rationales: B"
+  ];
+
+  // Every combined label must provide a scoreable answer without adding another item.
+  for (const label of combinedLabels) {
+    const questions = api.parseMultipleChoiceQuestions(`
+      Which intervention is the priority?
+      A. Perform the later action
+      B. Stabilize the client
+      C. Document before intervening
+      D. Delay and reassess
+      ${label}
+      A. This action can wait.
+      B. This action addresses instability.
+      C. Documentation follows stabilization.
+      D. Delay is unsafe.
+    `);
+    assert.equal(questions.length, 1, label);
+    assert.deepEqual(toPlain(questions[0].correctLetters), ["B"], label);
+    assert.match(questions[0].rationale, /B\. This action addresses instability/, label);
+  }
+});

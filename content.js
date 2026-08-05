@@ -7,13 +7,15 @@
   const CONTEXT_ELEMENT_ID = "mcq-radio-extension-conversation-context";
   const STREAM_IDLE_DELAY_MS = 1200;
   const ACCESS_CACHE_DURATION_MS = 30000;
-  const OPTION_PATTERN = /^(?:(?:[-*•]|\d+[\.\)])\s*)?([A-H])[\.\):\-]\s+(.+)$/i;
+  const OPTION_PATTERN = /^(?:(?:[-*•▪◦‣]|\d+[\.\)])\s*)?(?:(?:option|choice)\s+)?(?:\(([A-Z])\)|\[([A-Z])\]|([A-Z])\s*(?:[\.\):\-–—|]|\t+))\s*(.+)$/i;
   const SATA_PATTERN = /\b(?:sata|select all that apply|choose all that apply|multiple response|multi-select|multiple select)\b/i;
   const INLINE_STOP_PATTERN = /\s+(?:rationale|explanation|ordered response|correct order|next steps|answer key|answers?)\s*[:\-—]/i;
+  const ANSWER_RATIONALE_LABEL_PATTERN = /^\s*(?:[✅✔☑]\s*)?(?:correct\s+)?answer(?:\(s\)|s)?\s*(?:and|with|&|\/)\s*rationales?\b/i;
   const ANSWER_PATTERNS = [
-    /^\s*(?:answer|answers|correct answer|correct answers|correct option|correct options|solution)\s*[:\-]\s*[A-H]\b.*$/i,
-    /^\s*the\s+correct\s+answers?\s+(?:is|are)\s+[A-H]\b.*$/i,
-    /^\s*(?:answers|answer key)\s*[:\-]\s*(?:(?:question\s*)?[0-9]+\s*[\.\):\-]?\s*)?[A-H](?:\s*(?:,|;|and)\s*(?:(?:question\s*)?[0-9]+\s*[\.\):\-]?\s*)?[A-H])*\s*\.?\s*$/i
+    /^\s*(?:[✅✔☑]\s*)?(?:correct\s+)?answer(?:\(s\)|s)?\s*(?:and|with|&|\/)\s*rationales?\s*(?::|\-|–|—)\s*(?:choice|option)?\s*[\(\[]?[A-Z]\b.*$/i,
+    /^\s*(?:[✅✔☑]\s*)?(?:answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|best answer|solution|key)\s*(?::|\-|–|—|\bis\b|\bare\b)\s*(?:choice|option)?\s*[\(\[]?[A-Z]\b.*$/i,
+    /^\s*(?:[✅✔☑]\s*)?(?:the\s+)?(?:correct|best)?\s*answers?\s+(?:is|are)\s+(?:choice|option)?\s*[\(\[]?[A-Z]\b.*$/i,
+    /^\s*(?:answers|answer key)\s*[:\-–—]\s*(?:(?:question\s*)?[0-9]+\s*[\.\):\-]?\s*)?[A-Z](?:\s*(?:,|;|and|&|\/)\s*(?:(?:question\s*)?[0-9]+\s*[\.\):\-]?\s*)?[A-Z])*\s*\.?\s*$/i
   ];
 
   // Track parsed roots so rapid streaming mutations do not duplicate widgets.
@@ -301,6 +303,7 @@
     let activeRationaleQuestion = null;
     let isCollectingAnswerKey = false;
     let isCollectingNumberedRationales = false;
+    let isCollectingOptionRationales = false;
 
     // Walk line by line to preserve question prompts that appear before option A.
     for (const rawLine of lines) {
@@ -329,6 +332,7 @@
         activeRationaleQuestion = null;
         isCollectingAnswerKey = false;
         isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = false;
         continue;
       }
 
@@ -343,6 +347,20 @@
         activeRationaleQuestion = assignNumberedAnswerEntry(questions, answerKeyGroups, numberedAnswerEntry);
         isCollectingAnswerKey = false;
         isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = false;
+        continue;
+      }
+
+      // End the question at custom-GPT headings such as "Answer with Rationales".
+      if (isAnswerWithRationalesHeading(line)) {
+        appendQuestionIfValid(questions, currentQuestion);
+        lastQuestion = currentQuestion;
+        currentQuestion = null;
+        pendingPromptLines = [];
+        activeRationaleQuestion = lastQuestion;
+        isCollectingAnswerKey = true;
+        isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = true;
         continue;
       }
 
@@ -355,6 +373,7 @@
         activeRationaleQuestion = null;
         isCollectingAnswerKey = true;
         isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = false;
         continue;
       }
 
@@ -363,9 +382,11 @@
       // Save hidden answer keys for local scoring without rendering them.
       if (answerEntry) {
         const targetQuestion = currentQuestion || lastQuestion;
-        activeRationaleQuestion = null;
-        isCollectingAnswerKey = /^\s*(?:answers|answer key)\s*[:\-]/i.test(line);
+        const includesRationaleLabel = ANSWER_RATIONALE_LABEL_PATTERN.test(line);
+        activeRationaleQuestion = isCollectingOptionRationales || includesRationaleLabel ? targetQuestion : null;
+        isCollectingAnswerKey = /^\s*(?:answers|answer key)\s*[:\-–—]/i.test(line);
         isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = isCollectingOptionRationales || includesRationaleLabel;
 
         // Treat plural unnumbered answer keys as a sequence unless the current question is SATA.
         if (answerEntry.isPotentialSequence && !targetQuestion?.isSata && questions.length > 0) {
@@ -395,13 +416,16 @@
 
       // Stop option parsing when rationale or follow-up sections begin.
       if (rationaleEntry) {
-        appendQuestionIfValid(questions, currentQuestion);
-        lastQuestion = currentQuestion;
+        if (currentQuestion) {
+          appendQuestionIfValid(questions, currentQuestion);
+          lastQuestion = currentQuestion;
+        }
         currentQuestion = null;
         pendingPromptLines = [];
         activeRationaleQuestion = lastQuestion;
         isCollectingAnswerKey = false;
         isCollectingNumberedRationales = rationaleEntry.isPlural;
+        isCollectingOptionRationales = true;
         if (rationaleEntry.text) {
           assignRationale(lastQuestion, rationaleEntry.text);
         }
@@ -417,6 +441,7 @@
         activeRationaleQuestion = null;
         isCollectingAnswerKey = false;
         isCollectingNumberedRationales = false;
+        isCollectingOptionRationales = false;
         continue;
       }
 
@@ -433,6 +458,12 @@
       const option = parseOptionLine(line);
       const questionStart = parseQuestionStart(line);
 
+      // Lettered lines under a rationale section explain options; they are not another MCQ.
+      if (activeRationaleQuestion && isCollectingOptionRationales && option) {
+        appendRationale(activeRationaleQuestion, `${option.letter}. ${option.text}`);
+        continue;
+      }
+
       // Append plain continuation lines after a "Rationale:" label.
       if (activeRationaleQuestion && !option && !questionStart) {
         appendRationale(activeRationaleQuestion, line);
@@ -443,6 +474,7 @@
       activeRationaleQuestion = null;
       isCollectingAnswerKey = false;
       isCollectingNumberedRationales = false;
+      isCollectingOptionRationales = false;
 
       // Option lines start or continue a question group.
       if (option) {
@@ -492,7 +524,7 @@
    * @returns {{letter: string, text: string} | null} Parsed option data.
    */
   function parseOptionLine(line) {
-    // Match common option formats: A. text, A) text, A: text, or A - text.
+    // Match lettered options with punctuation, brackets, bullets, or explicit labels.
     const match = line.match(OPTION_PATTERN);
 
     // Return null for non-option lines so callers can handle prompts normally.
@@ -502,8 +534,8 @@
 
     // Normalize the option letter and keep the human-readable answer text.
     return {
-      letter: match[1].toUpperCase(),
-      text: cleanOptionText(match[2])
+      letter: (match[1] || match[2] || match[3]).toUpperCase(),
+      text: cleanOptionText(match[4])
     };
   }
 
@@ -531,10 +563,15 @@
     // Work with trimmed text because the parser ignores surrounding whitespace anyway.
     const trimmedLine = line.trim();
     const boundaries = [];
-    const markerPattern = /(?:question|q)\s*\d+\s*[\.\):\-]\s+|\d+[\.\)]\s+|[A-H][\.\):\-]\s+|(?:answer|answers|correct answer|correct answers|correct option|correct options|solution|answer key|rationales?|explanations?)\s*[:\-—]\s*/gi;
+    const markerPattern = /(?:question|q)\s*\d+\s*[\.\):\-–—]\s+|\d+[\.\)]\s+|(?:option|choice)\s+[A-Z]\s*[:\-–—]\s*|(?:\([A-Z]\)|\[[A-Z]\]|[A-Z][\.\):\-–—])\s+|(?:correct\s+)?answer(?:\(s\)|s)?\s*(?:and|with|&|\/)\s*rationales?\s*[:\-–—]\s*|(?:answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|best answer|solution|key|answer key|rationales?|explanations?)\s*(?::|\-|–|—|\bis\b|\bare\b)\s*/gi;
 
     // Blank input stays as an ignored blank line for the caller's existing behavior.
     if (!trimmedLine) {
+      return [trimmedLine];
+    }
+
+    // Preserve complete option lines before compact-marker recovery splits list prefixes.
+    if (parseOptionLine(trimmedLine)) {
       return [trimmedLine];
     }
 
@@ -590,12 +627,12 @@
     const segmentText = line.slice(segmentStart, markerIndex).trim();
 
     // Only option letters and grouped numeric keys are ambiguous inside answer text.
-    if (!/^(?:[A-H][\.\):\-]|\d+[\.\)])\s+/i.test(marker)) {
+    if (!/^(?:(?:\([A-Z]\)|\[[A-Z]\]|[A-Z][\.\):\-–—])|\d+[\.\)])\s+/i.test(marker)) {
       return false;
     }
 
     // Match labels such as "Answer:" or "Answer key:" before answer content.
-    return /^(?:answer|answers|correct answer|correct answers|correct option|correct options|solution|answer key)\s*[:\-]/i.test(segmentText);
+    return /^(?:answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|best answer|solution|key|answer key)\s*(?::|\-|–|—|\bis\b|\bare\b)/i.test(segmentText);
   }
 
   /**
@@ -621,7 +658,7 @@
    */
   function parseQuestionStart(line) {
     // Prefer explicit labels because they can safely omit spacing after a colon.
-    const labelledMatch = line.match(/^(?:question|q)\s*(\d+)\s*[\.\):\-]?\s*(.+)$/i);
+    const labelledMatch = line.match(/^(?:question|q)\s*(\d+)\s*[\.\):\-–—]?\s*(.+)$/i);
     if (labelledMatch) {
       return {
         index: Math.max(0, Number(labelledMatch[1]) - 1),
@@ -630,7 +667,7 @@
     }
 
     // Match numbered question lines while requiring safe punctuation/spacing.
-    const numberedMatch = line.match(/^(\d+)(?:(?:[\.\)]\s*)|(?:\s*[:\-]\s+))(.+)$/i);
+    const numberedMatch = line.match(/^(\d+)(?:(?:[\.\)]\s*)|(?:\s*[:\-–—]\s+))(.+)$/i);
     if (!numberedMatch) {
       return null;
     }
@@ -690,8 +727,8 @@
    */
   function extractInlineAnswerKey(text) {
     // Match title suffixes like "Correct answers: A, C, D" or "(Answer: B)".
-    const suffixMatch = text.match(/\s*[\(\[]?\s*(?:answer|answers|correct answer|correct answers|correct option|correct options|answer key|solution)\s*[:\-]\s*([A-H](?:\s*(?:,|;|and|&)\s*[A-H])*)\s*[\)\]]?\.?\s*$/i)
-      || text.match(/\s*[\(\[]?\s*the\s+correct\s+answers?\s+(?:is|are)\s+([A-H](?:\s*(?:,|;|and|&)\s*[A-H])*)\s*[\)\]]?\.?\s*$/i);
+    const suffixMatch = text.match(/\s*[\(\[]?\s*(?:answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|best answer|answer key|solution|key)\s*(?::|\-|–|—|\bis\b|\bare\b)\s*[\(\[]?([A-Z](?:\s*(?:,|;|and|&|\/)\s*[A-Z])*)\s*[\)\]]?\.?\s*$/i)
+      || text.match(/\s*[\(\[]?\s*(?:the\s+)?(?:correct|best)?\s*answers?\s+(?:is|are)\s+[\(\[]?([A-Z](?:\s*(?:,|;|and|&|\/)\s*[A-Z])*)\s*[\)\]]?\.?\s*$/i);
 
     // Return the prompt unchanged when no inline answer key is present.
     if (!suffixMatch) {
@@ -716,8 +753,8 @@
    */
   function parseAnswerEntry(line) {
     // Parse answer-key prefixes that ChatGPT commonly emits after questions.
-    const prefixedMatch = line.match(/^\s*(?:answer|answers|correct answer|correct answers|correct option|correct options|solution|answer key)\s*[:\-]\s*(.+)$/i)
-      || line.match(/^\s*the\s+correct\s+answers?\s+(?:is|are)\s+(.+)$/i);
+    const prefixedMatch = line.match(/^\s*(?:[✅✔☑]\s*)?(?:(?:correct\s+)?answer(?:\(s\)|s)?\s*(?:and|with|&|\/)\s*rationales?|answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|best answer|solution|key|answer key)\s*(?::|\-|–|—|\bis\b|\bare\b)\s*(.+)$/i)
+      || line.match(/^\s*(?:[✅✔☑]\s*)?(?:the\s+)?(?:correct|best)?\s*answers?\s+(?:is|are)\s+(.+)$/i);
 
     // Return null when the line is not an answer-key line.
     if (!prefixedMatch) {
@@ -727,7 +764,7 @@
     // Split the answer body into one or more question-specific answer groups.
     const body = splitAnswerBodyRationale(prefixedMatch[1].trim());
     const groups = parseAnswerGroups(body.answerText);
-    const hasPluralSequencePrefix = /^\s*(?:answers|answer key)\s*[:\-]/i.test(line);
+    const hasPluralSequencePrefix = /^\s*(?:answers|answer key)\s*[:\-–—]/i.test(line);
     const isPotentialSequence = hasPluralSequencePrefix && groups.length === 1 && groups[0].length > 1 && !hasGroupedAnswerNumbers(body.answerText);
 
     // Ignore malformed answer lines that do not include option letters.
@@ -747,7 +784,19 @@
    */
   function isAnswerKeyHeading(line) {
     // Match heading-only labels like "Answers:" or "Answer key".
-    return /^(?:answers?|answer key|correct answers?|correct options?|solutions?)\s*[:\-]?\s*$/i.test(line);
+    return /^(?:answers?|answer key|correct answers?|correct options?|correct choices?|solutions?)\s*[:\-–—]?\s*$/i.test(line);
+  }
+
+  /**
+   * Detects a custom-GPT heading that introduces an answer and option rationales.
+   *
+   * @param {string} line - Trimmed rendered line.
+   * @returns {boolean} True when the completed question is followed by answer details.
+   */
+  function isAnswerWithRationalesHeading(line) {
+    // Require a heading-only label so combined labels containing an answer parse normally.
+    return ANSWER_RATIONALE_LABEL_PATTERN.test(line)
+      && /rationales?\s*[:\-–—]?\s*$/i.test(line);
   }
 
   /**
@@ -786,7 +835,7 @@
    */
   function isQuestionSectionHeading(line) {
     // Match exact headings like "Questions" and "Questions 1-10".
-    return /^questions(?:\s+\d+\s*[-–—]\s*\d+)?$/i.test(line);
+    return /^(?:multiple[\s-]choice\s+)?questions(?:\s+\d+\s*[-–—]\s*\d+)?\s*:?\s*$/i.test(line);
   }
 
   /**
@@ -797,7 +846,7 @@
    */
   function parseStandaloneQuestionLabel(line) {
     // Match a label-only question marker without treating it as prompt text.
-    const match = line.match(/^(?:(?:question|q)\s*)?(\d+)\s*[:\.\)\-]?\s*$/i);
+    const match = line.match(/^(?:(?:question|q)\s*)?(\d+)\s*[:\.\)\-–—]?\s*$/i);
     if (!match) {
       return null;
     }
@@ -816,7 +865,7 @@
    */
   function parseNumberedAnswerEntry(line) {
     // Match forms like "Question 1 Answer: B - Side effect".
-    const match = line.match(/^(?:question\s*)?(\d+)\s*(?:answer|answers|correct answer|correct answers|correct option|correct options|solution)\s*[:\-]\s*(.+)$/i);
+    const match = line.match(/^(?:question\s*)?(\d+)\s*(?:answer(?:\(s\)|s)?|correct answer(?:s)?|correct option(?:s)?|correct choice(?:s)?|solution|key)\s*[:\-–—]\s*(.+)$/i);
     if (!match) {
       return null;
     }
@@ -878,7 +927,7 @@
     }
 
     // Match compact forms like "B - because the symptom is expected".
-    const becauseMatch = body.match(/^([A-H](?:\s*(?:,|;|and|&)\s*[A-H])*)\s*(?:[\.\)]|\s*[-—]\s*)\s*(because|since)\s+(.+)$/i);
+    const becauseMatch = body.match(/^[\(\[]?([A-Z](?:\s*(?:,|;|and|&|\/)\s*[A-Z])*)[\)\]]?\s*(?:[\.\)]|\s*[-–—]\s*)\s*(because|since)\s+(.+)$/i);
     if (becauseMatch) {
       return {
         answerText: becauseMatch[1].trim(),
@@ -901,7 +950,7 @@
    */
   function hasGroupedAnswerNumbers(body) {
     // Match numbered keys like "1. A", "2: C", or "Question 3) B".
-    return /(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-]\s*(?=[A-H]\b)/i.test(body);
+    return /(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-–—]\s*(?=[\(\[]?[A-Z]\b)/i.test(body);
   }
 
   /**
@@ -912,7 +961,7 @@
    */
   function parseAnswerGroups(body) {
     // Detect grouped keys like "1. A, C; 2. B" before treating letters as one SATA key.
-    const groupedMatches = [...body.matchAll(/(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-]\s*(?=[A-H]\b)/gi)];
+    const groupedMatches = [...body.matchAll(/(?:^|[;,\s]+)(?:question\s*)?\d+\s*[\.\):\-–—]\s*(?=[\(\[]?[A-Z]\b)/gi)];
 
     // Return each numbered group as its own question's correct letters.
     if (groupedMatches.length > 0) {
@@ -941,7 +990,7 @@
    */
   function extractUniqueLetters(text) {
     // Collect standalone option letters in the order they appear.
-    const letters = [...text.matchAll(/\b[A-H]\b/gi)].map((match) => match[0].toUpperCase());
+    const letters = [...text.matchAll(/\b[A-Z]\b/gi)].map((match) => match[0].toUpperCase());
 
     // Remove duplicates so repeated answer wording does not affect scoring.
     return [...new Set(letters)];
@@ -2559,6 +2608,7 @@
       extractInlineAnswerKey,
       parseAnswerEntry,
       isAnswerKeyHeading,
+      isAnswerWithRationalesHeading,
       parseNumberedAnswerKeyEntry,
       isQuestionSectionHeading,
       parseStandaloneQuestionLabel,
