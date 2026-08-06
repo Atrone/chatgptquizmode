@@ -63,11 +63,12 @@ function installInnerTextPolyfill(window) {
  *
  * @param {Record<string, unknown>} storage - Mutable storage backing object.
  * @param {Array<Record<string, unknown>>} runtimeResponses - Queued runtime responses.
- * @returns {{chrome: Record<string, unknown>, sentMessages: Array<Record<string, unknown>>}} Mocked Chrome API and calls.
+ * @returns {{chrome: Record<string, unknown>, sentMessages: Array<Record<string, unknown>>, storageChangeListeners: Function[]}} Mocked Chrome API and calls.
  */
 function createChromeMock(storage, runtimeResponses = []) {
   // Record runtime messages so tests can assert extension API routing.
   const sentMessages = [];
+  const storageChangeListeners = [];
 
   // Return a minimal Chrome extension API used by the content script.
   const chrome = {
@@ -99,6 +100,12 @@ function createChromeMock(storage, runtimeResponses = []) {
           // Persist all values into the mutable backing object.
           Object.assign(storage, values);
         }
+      },
+      onChanged: {
+        addListener(listener) {
+          // Capture lifecycle listeners so initialization can be tested directly.
+          storageChangeListeners.push(listener);
+        }
       }
     },
     runtime: {
@@ -115,14 +122,14 @@ function createChromeMock(storage, runtimeResponses = []) {
   };
 
   // Return both the mock API and the captured message list.
-  return { chrome, sentMessages };
+  return { chrome, sentMessages, storageChangeListeners };
 }
 
 /**
  * Loads the content script in an isolated JSDOM page with test helpers exposed.
  *
  * @param {{url?: string, storage?: Record<string, unknown>, runtimeResponses?: Array<Record<string, unknown>>}} options - Harness options.
- * @returns {{window: Window, document: Document, api: Record<string, Function>, storage: Record<string, unknown>, sentMessages: Array<Record<string, unknown>>}} Loaded harness.
+ * @returns {{window: Window, document: Document, api: Record<string, Function>, storage: Record<string, unknown>, sentMessages: Array<Record<string, unknown>>, storageChangeListeners: Function[]}} Loaded harness.
  */
 function loadContentHarness(options = {}) {
   // Create a page that looks like a ChatGPT conversation URL.
@@ -149,7 +156,8 @@ function loadContentHarness(options = {}) {
     document: window.document,
     api: window.__mcqRadioExtensionTestApi,
     storage,
-    sentMessages: chromeMock.sentMessages
+    sentMessages: chromeMock.sentMessages,
+    storageChangeListeners: chromeMock.storageChangeListeners
   };
 }
 
@@ -1365,6 +1373,65 @@ test("starts, stops, and applies enabled storage changes", () => {
   assert.equal(root.querySelectorAll(`.${EXTENSION_PREFIX}-quiz`).length, 0);
   api.handleStorageChange({ "mcq-radio-extension:enabled": { newValue: true } }, "local");
   api.stop();
+});
+
+/**
+ * Verifies initialization and the remaining assistant-root orchestration helpers.
+ */
+test("initializes, schedules, scans, and refreshes assistant roots", async () => {
+  // Initialize from disabled storage and verify the popup-change listener is registered.
+  const disabledHarness = loadContentHarness({
+    storage: { "mcq-radio-extension:enabled": false }
+  });
+  await disabledHarness.api.initialize();
+  assert.equal(disabledHarness.storageChangeListeners.length, 1);
+  disabledHarness.api.stop();
+
+  // Exercise renderability checks and delayed processing without waiting for the debounce.
+  const scheduledHarness = loadContentHarness();
+  const scheduledRoot = scheduledHarness.document.createElement("div");
+  scheduledRoot.setAttribute("data-message-author-role", "assistant");
+  scheduledRoot.innerHTML = `
+    <p>Question?</p>
+    <p>A. One</p>
+    <p>B. Two</p>
+    <p>Answer: B</p>
+  `;
+  scheduledHarness.document.body.appendChild(scheduledRoot);
+  assert.equal(scheduledHarness.api.hasRenderableMcqContent(scheduledRoot), true);
+  assert.equal(scheduledHarness.api.hasRenderableMcqContent(scheduledHarness.document.createElement("div")), false);
+  scheduledHarness.api.scheduleAssistantRootProcessing(scheduledRoot);
+  scheduledHarness.api.scanPageForMcqOutputs();
+  assert.equal(scheduledRoot.querySelectorAll(`.${EXTENSION_PREFIX}-quiz`).length, 0);
+  scheduledHarness.api.stop();
+
+  // Rebuild a locked root directly after a fresh paid access check.
+  const refreshHarness = loadContentHarness({
+    runtimeResponses: [
+      { ok: true, status: "locked", trialRemainingMs: 0 },
+      { ok: true, status: "paid" },
+      { ok: true, status: "paid" }
+    ]
+  });
+  const refreshRoot = refreshHarness.document.createElement("div");
+  refreshRoot.setAttribute("data-message-author-role", "assistant");
+  refreshRoot.innerHTML = `
+    <p>Question?</p>
+    <p>A. One</p>
+    <p>B. Two</p>
+    <p>Answer: B</p>
+  `;
+  refreshHarness.document.body.appendChild(refreshRoot);
+  await refreshHarness.api.processAssistantRoot(refreshRoot);
+  assert.equal(refreshRoot.querySelectorAll(`.${EXTENSION_PREFIX}-paywall`).length, 1);
+  refreshHarness.api.clearAccessStateCache();
+  await refreshHarness.api.refreshPaywallRoot(refreshRoot);
+  assert.equal(refreshRoot.querySelectorAll(`.${EXTENSION_PREFIX}-paywall`).length, 0);
+  assert.equal(refreshRoot.querySelectorAll(`.${EXTENSION_PREFIX}-question`).length, 1);
+
+  // Invoke the page-level refresh path while no locked panels remain.
+  refreshHarness.api.refreshAccessGatedOutputs();
+  assert.equal(refreshRoot.querySelectorAll(`.${EXTENSION_PREFIX}-question`).length, 1);
 });
 
 /**

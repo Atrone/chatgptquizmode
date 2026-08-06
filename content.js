@@ -553,6 +553,7 @@
       ...services.ui,
       ...services.access,
       ...services.persistence,
+      initialize,
       handleMutations,
       scanPageForMcqOutputs,
       scheduleAssistantRootProcessing,
