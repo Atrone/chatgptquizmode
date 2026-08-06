@@ -33,11 +33,68 @@
 }
 
 .mcq-radio-extension-reliability-tip {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 0.55rem;
   font-size: 0.85rem;
   line-height: 1.4;
   margin: 0 0 0.7rem;
-  opacity: 0.78;
-  white-space: pre-line;
+  overflow: hidden;
+}
+
+.mcq-radio-extension-reliability-tip summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 0.55rem;
+  justify-content: space-between;
+  padding: 0.55rem 0.65rem;
+}
+
+.mcq-radio-extension-reliability-tip-title {
+  font-weight: 650;
+}
+
+.mcq-radio-extension-reliability-tip-hint {
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.mcq-radio-extension-reliability-tip-content {
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  padding: 0.65rem;
+}
+
+.mcq-radio-extension-reliability-tip-content p {
+  margin: 0 0 0.45rem;
+}
+
+.mcq-radio-extension-reliability-tip-instruction {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  border-left: 0.2rem solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 0 0.4rem 0.4rem 0;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+}
+
+.mcq-radio-extension-reliability-tip-example-label {
+  font-size: 0.78rem;
+  font-weight: 650;
+  margin-bottom: 0.35rem;
+  opacity: 0.72;
+  text-transform: uppercase;
+}
+
+.mcq-radio-extension-reliability-tip-example {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  border-radius: 0.45rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.65rem;
+  white-space: pre-wrap;
 }
 
 .mcq-radio-extension-score-mode-toggle {

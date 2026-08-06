@@ -73,3 +73,18 @@ The extension renders checkboxes and requires the exact selected set for the que
 The extension stores selections per conversation path. It cannot directly add selected answers to ChatGPT's model-side memory or server-side conversation state, but it keeps them available to the active browser conversation through extension storage and a hidden DOM context element.
 
 Raw Google Pay is not run inside the ChatGPT content script. Google Pay is provided through Stripe Checkout on the hosted ExtensionPay payment page.
+
+## Architecture
+
+The Manifest V3 content scripts load in dependency order and expose factories through the
+single `globalThis.McqQuiz` namespace:
+
+- `src/content/parser.js` parses ChatGPT text into normalized quiz data.
+- `src/content/access.js` owns payment-state messaging and caching.
+- `src/content/persistence.js` stores and mirrors conversation selections.
+- `src/content/scoring.js` calculates scores and normalizes answer data.
+- `src/content/ui.js` builds quiz and paywall DOM elements.
+- `content.js` coordinates page observation, streaming, and the content services.
+
+`background.js` remains the ExtensionPay service worker, while the popup files own the
+extension enable/disable setting.

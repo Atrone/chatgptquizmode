@@ -20,6 +20,11 @@
         "https://chat.openai.com/*"
       ],
       "js": [
+        "src/content/parser.js",
+        "src/content/access.js",
+        "src/content/persistence.js",
+        "src/content/scoring.js",
+        "src/content/ui.js",
         "content.js"
       ],
       "css": [

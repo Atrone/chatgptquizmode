@@ -4,8 +4,27 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { JSDOM } = require("jsdom");
 
-const CONTENT_SCRIPT_PATH = join(__dirname, "..", "content.js");
-const CONTENT_SCRIPT_SOURCE = readFileSync(CONTENT_SCRIPT_PATH, "utf8");
+const CONTENT_SCRIPT_PATHS = [
+  join(__dirname, "..", "src", "content", "parser.js"),
+  join(__dirname, "..", "src", "content", "access.js"),
+  join(__dirname, "..", "src", "content", "persistence.js"),
+  join(__dirname, "..", "src", "content", "scoring.js"),
+  join(__dirname, "..", "src", "content", "ui.js"),
+  join(__dirname, "..", "content.js")
+];
+
+/**
+ * Reads one ordered content-script source for the JSDOM harness.
+ *
+ * @param {string} scriptPath - Absolute source file path.
+ * @returns {string} JavaScript source text.
+ */
+function readContentScriptSource(scriptPath) {
+  // Match Chrome's classic-script loading by preserving each file verbatim.
+  return readFileSync(scriptPath, "utf8");
+}
+
+const CONTENT_SCRIPT_SOURCES = CONTENT_SCRIPT_PATHS.map(readContentScriptSource);
 const EXTENSION_PREFIX = "mcq-radio-extension";
 
 /**
@@ -121,8 +140,10 @@ function loadContentHarness(options = {}) {
   window.chrome = chromeMock.chrome;
   window.__MCQ_RADIO_EXTENSION_ENABLE_TEST_API__ = true;
 
-  // Execute the real content script and return its test-only helper API.
-  dom.getInternalVMContext().eval(CONTENT_SCRIPT_SOURCE);
+  // Execute content sources in the same order declared by the MV3 manifest.
+  for (const contentScriptSource of CONTENT_SCRIPT_SOURCES) {
+    dom.getInternalVMContext().eval(contentScriptSource);
+  }
   return {
     window,
     document: window.document,
@@ -323,20 +344,18 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   assert.equal(quiz.querySelectorAll("input[type='radio']:checked").length, 1);
   assert.equal(quiz.querySelectorAll("input[type='checkbox']:checked").length, 2);
   assert.match(quiz.textContent, /left in your free trial/);
-  assert.equal(
-    quiz.querySelector(`.${EXTENSION_PREFIX}-reliability-tip`).textContent,
-    `If you want better reliability, try adding 'Add answers at the end of each question (with a short rationale), not at the end of your entire response. Here's an example question outline: Question 1:
-
-A 35-year-old client at 28 weeks’ gestation has pre-eclampsia, fetal growth restriction, and abnormal uteroplacental Doppler findings. Placental examination later shows infarcted areas and acute atherosis. Which explanation best describes the significance of these placental changes?
-
-A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia
-B. They indicate excessive placental blood flow and fetal hyperoxygenation
-C. They result from maternal hypervolemia without endothelial injury
-D. They confirm that pre-eclampsia originated from fetal hypertension
-
-Answer: A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia.
-
-Rationale: Inadequate spiral-artery remodelling leaves placental vessels thick-walled and high resistance. Reduced perfusion promotes hypoxia, acute atherosis, infarction, and impaired fetal growth.' to the end of your prompt`
+  // Keep the long reliability guidance collapsed and split into scannable sections.
+  const reliabilityTip = quiz.querySelector(`.${EXTENSION_PREFIX}-reliability-tip`);
+  assert.equal(reliabilityTip.tagName, "DETAILS");
+  assert.equal(reliabilityTip.open, false);
+  assert.match(reliabilityTip.querySelector("summary").textContent, /Improve quiz reliability/);
+  assert.match(
+    reliabilityTip.querySelector(`.${EXTENSION_PREFIX}-reliability-tip-instruction`).textContent,
+    /immediately after each question/
+  );
+  assert.match(
+    reliabilityTip.querySelector(`.${EXTENSION_PREFIX}-reliability-tip-example`).textContent,
+    /Answer: A[\s\S]*Rationale:/
   );
 
   // Score the restored selections and render readable feedback.
