@@ -492,6 +492,56 @@ test("processes assistant roots for paid and locked access states", async () => 
   assert.match(lockedRoot.textContent, /Unlock ChatGPT Quiz Mode/);
 });
 
+/**
+ * Verifies ChatGPT text-selection UI does not rebuild a completed quiz.
+ */
+test("ignores highlight wrappers and selection popups with unchanged source text", async () => {
+  // Render a completed quiz before reproducing ChatGPT's selection-related DOM changes.
+  const { document, api } = loadContentHarness({
+    runtimeResponses: [{ ok: true, status: "paid" }]
+  });
+  const root = document.createElement("div");
+  root.setAttribute("data-message-author-role", "assistant");
+  root.innerHTML = `
+    <p>Which value is correct?</p>
+    <p>A. Alpha</p>
+    <p>B. Beta</p>
+    <p>Answer: B</p>
+  `;
+  document.body.appendChild(root);
+  await api.processAssistantRoot(root);
+  const originalQuiz = root.querySelector(`.${EXTENSION_PREFIX}-quiz`);
+
+  // Simulate ChatGPT wrapping selected response text while preserving its visible content.
+  const prompt = root.querySelector("p");
+  const originalText = prompt.firstChild;
+  const highlight = document.createElement("span");
+  highlight.textContent = originalText.textContent;
+  prompt.replaceChild(highlight, originalText);
+  api.handleMutations([{
+    target: prompt,
+    addedNodes: [highlight],
+    removedNodes: [originalText],
+    type: "childList"
+  }]);
+
+  // Simulate the response-selection popup, whose button text is excluded from quiz parsing.
+  const selectionButton = document.createElement("button");
+  selectionButton.textContent = "Ask ChatGPT";
+  prompt.appendChild(selectionButton);
+  api.handleMutations([{
+    target: prompt,
+    addedNodes: [selectionButton],
+    removedNodes: [],
+    type: "childList"
+  }]);
+
+  // The existing quiz must remain visible without returning to the streaming placeholder.
+  assert.equal(root.querySelector(`.${EXTENSION_PREFIX}-quiz`), originalQuiz);
+  assert.equal(root.querySelectorAll(`.${EXTENSION_PREFIX}-streaming-placeholder`).length, 0);
+  assert.equal(api.hasAssistantSourceTextChanged(root), false);
+});
+
 test("stores option changes and mirrors conversation context", async () => {
   // Build a SATA question so change handling stores an array of selected letters.
   const { document, api, storage } = loadContentHarness();

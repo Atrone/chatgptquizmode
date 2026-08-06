@@ -23,6 +23,7 @@
   const processedRoots = new WeakSet();
   const processingRoots = new WeakSet();
   const pendingProcessingTimers = new WeakMap();
+  const sourceTextByRoot = new WeakMap();
   let extensionEnabled = true;
   let pageObserver = null;
 
@@ -126,6 +127,7 @@
       restoreAnswerLines(root);
       root.removeAttribute(PROCESSED_ATTRIBUTE);
       processedRoots.delete(root);
+      sourceTextByRoot.delete(root);
     }
 
     // Remove the hidden selection mirror owned by the extension.
@@ -175,6 +177,11 @@
 
       // Ignore page updates outside assistant message output.
       if (!root) {
+        continue;
+      }
+
+      // Ignore selection-toolbar and highlight-wrapper mutations that leave response text unchanged.
+      if (root.hasAttribute(PROCESSED_ATTRIBUTE) && !hasAssistantSourceTextChanged(root)) {
         continue;
       }
 
@@ -332,6 +339,7 @@
 
     // Extract the visible text that ChatGPT rendered for this assistant response.
     const text = getVisibleText(root);
+    sourceTextByRoot.set(root, text);
     const questions = parseMultipleChoiceQuestions(text);
 
     // Mark non-MCQ outputs as processed to avoid repeated parsing.
@@ -407,6 +415,22 @@
 
     // Return rendered text with browser-normalized line breaks.
     return clone.innerText || clone.textContent || "";
+  }
+
+  /**
+   * Determines whether a processed assistant response has different parseable source text.
+   *
+   * @param {Element} root - Assistant output root affected by a DOM mutation.
+   * @returns {boolean} True when the quiz source text changed and needs reparsing.
+   */
+  function hasAssistantSourceTextChanged(root) {
+    // A missing snapshot means the root has not completed normal processing yet.
+    if (!sourceTextByRoot.has(root)) {
+      return true;
+    }
+
+    // ChatGPT may wrap a selection or add its highlight popup without changing response text.
+    return getVisibleText(root) !== sourceTextByRoot.get(root);
   }
 
   /**
@@ -537,6 +561,7 @@
       removeStreamingPlaceholder,
       processAssistantRoot,
       getVisibleText,
+      hasAssistantSourceTextChanged,
       refreshAccessGatedOutputs,
       refreshPaywallRoot,
       findAssistantRoot,
