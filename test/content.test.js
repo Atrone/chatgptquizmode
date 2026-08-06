@@ -355,7 +355,7 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   );
   assert.match(
     reliabilityTip.querySelector(`.${EXTENSION_PREFIX}-reliability-tip-example`).textContent,
-    /Answer: A[\s\S]*Rationale:/
+    /Answer: Option X[\s\S]*Rationale:/
   );
 
   // Score the restored selections and render readable feedback.
@@ -788,4 +788,509 @@ test("parses combined answer and rationale labels", () => {
     assert.deepEqual(toPlain(questions[0].correctLetters), ["B"], label);
     assert.match(questions[0].rationale, /B\. This action addresses instability/, label);
   }
+});
+
+/**
+ * Verifies parser utility behavior for compact lines and ambiguous answer markers.
+ */
+test("normalizes compact MCQ lines and preserves answer content markers", () => {
+  // Load parser utilities from the real content-script factory.
+  const { api } = loadContentHarness();
+
+  assert.deepEqual(toPlain(api.normalizeMcqLines("Question 1: Pick one A. Alpha B. Beta Answer: B")), [
+    "Question 1: Pick one",
+    "A. Alpha",
+    "B. Beta",
+    "Answer: B"
+  ]);
+  assert.deepEqual(toPlain(api.splitCompactMcqLine("A. Alpha")), ["A. Alpha"]);
+  assert.deepEqual(toPlain(api.splitCompactMcqLine("   ")), [""]);
+  assert.equal(
+    api.isAnswerContentMarkerInsideCurrentSegment("Answer: B. Beta", [0], 8, "B. "),
+    true
+  );
+  assert.equal(
+    api.isAnswerContentMarkerInsideCurrentSegment("Prompt B. Beta", [0], 7, "B. "),
+    false
+  );
+  assert.equal(api.cleanOptionText("Alpha explanation: hidden"), "Alpha");
+});
+
+/**
+ * Verifies question shell creation and explicit embedded question handling.
+ */
+test("creates question shells with inline answers and SATA cues", () => {
+  // Exercise question construction independently of the full parser loop.
+  const { api } = loadContentHarness();
+  const embedded = api.parseEmbeddedQuestionStart("Question 7: Choose one");
+  assert.deepEqual(toPlain(embedded), { index: 6, text: "Choose one" });
+  assert.equal(api.parseEmbeddedQuestionStart("7-day duration"), null);
+
+  const question = api.createQuestion(["Select all that apply. Correct answers: A and C"], 0);
+  assert.equal(question.prompt, "Select all that apply.");
+  assert.deepEqual(toPlain(question.correctLetters), ["A", "C"]);
+  assert.equal(question.isSata, true);
+
+  const embeddedQuestion = api.createQuestion(["ignored"], 1, { text: "Embedded prompt" });
+  assert.equal(embeddedQuestion.prompt, "Embedded prompt");
+  assert.equal(api.createPrompt(["one", "two", "three", "four"], 0), "two three four");
+});
+
+/**
+ * Verifies answer and rationale assignment helpers mutate only valid targets.
+ */
+test("assigns answer keys and rationales without overwriting explicit data", () => {
+  // Create plain mutable question records for low-level assignment tests.
+  const { api } = loadContentHarness();
+  const first = { correctLetters: [], isSata: false, rationale: "" };
+  const second = { correctLetters: ["B"], isSata: false, rationale: "Existing" };
+  const questions = [first, second];
+
+  api.assignAnswerLetters(first, ["A", "C"]);
+  assert.deepEqual(toPlain(first.correctLetters), ["A", "C"]);
+  assert.equal(first.isSata, true);
+  api.assignAnswerLetters(null, ["A"]);
+
+  api.assignAnswerKeyToQuestions(questions, [["D"], ["A"]]);
+  assert.deepEqual(toPlain(questions.map((question) => question.correctLetters)), [["A", "C"], ["B"]]);
+  api.assignRationaleGroupsToQuestions(questions, ["First rationale", "Replacement"]);
+  assert.equal(first.rationale, "First rationale");
+  assert.equal(second.rationale, "Existing");
+
+  api.assignRationale(first, "Ignored replacement");
+  api.appendRationale(first, "More detail.");
+  assert.equal(first.rationale, "First rationale More detail.");
+  api.appendRationale(null, "Ignored");
+});
+
+/**
+ * Verifies numbered answers can be stored immediately or deferred by index.
+ */
+test("assigns numbered answers to parsed and deferred questions", () => {
+  // Exercise both existing-question and missing-question assignment branches.
+  const { api } = loadContentHarness();
+  const questions = [{ correctLetters: [], isSata: false, rationale: "" }];
+  const groups = [];
+  const assigned = api.assignNumberedAnswerEntry(questions, groups, {
+    index: 0,
+    letters: ["B"],
+    rationale: "Because B."
+  });
+  assert.equal(assigned, questions[0]);
+  assert.deepEqual(toPlain(groups), [["B"]]);
+  assert.equal(questions[0].rationale, "Because B.");
+
+  const deferred = api.assignNumberedAnswerEntry(questions, groups, {
+    index: 2,
+    letters: ["C"],
+    rationale: ""
+  });
+  assert.equal(deferred, null);
+  assert.deepEqual(toPlain(groups[2]), ["C"]);
+});
+
+/**
+ * Verifies parser predicates and malformed input rejection branches.
+ */
+test("rejects malformed parser labels and recognizes supported headings", () => {
+  // Cover negative and positive branches for small parser predicates.
+  const { api } = loadContentHarness();
+  assert.equal(api.parseQuestionStart("1:1 ratio"), null);
+  assert.equal(api.parseStandaloneQuestionLabel("Question one"), null);
+  assert.equal(api.parseNumberedAnswerEntry("Question 2 Answer: none"), null);
+  assert.equal(api.parseNumberedAnswerKeyEntry("2. none"), null);
+  assert.equal(api.parseRationaleEntry("ordinary prose"), null);
+  assert.equal(api.parseNumberedRationale("ordinary prose"), null);
+  assert.equal(api.parseAnswerEntry("Answer: no listed option"), null);
+  assert.equal(api.isAnswerWithRationalesHeading("Answer with Rationales:"), true);
+  assert.equal(api.isAnswerWithRationalesHeading("Answer with Rationale: B"), false);
+  assert.equal(api.hasGroupedAnswerNumbers("1. A 2. B"), true);
+  assert.equal(api.hasGroupedAnswerNumbers("A and B"), false);
+  assert.equal(api.isAnswerLine("Ordinary explanation"), false);
+});
+
+/**
+ * Verifies candidate questions require multiple options before insertion.
+ */
+test("appends only valid parser questions", () => {
+  // Build candidates directly to isolate the parser validation threshold.
+  const { api } = loadContentHarness();
+  const questions = [];
+  api.appendQuestionIfValid(questions, null);
+  api.appendQuestionIfValid(questions, { prompt: "Too short", options: [{ letter: "A", text: "One" }] });
+  api.appendQuestionIfValid(questions, {
+    prompt: "Valid",
+    options: [{ letter: "A", text: "One" }, { letter: "B", text: "Two" }]
+  });
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].prompt, "Valid");
+});
+
+/**
+ * Verifies scoring normalization, exact matching, and answer summaries.
+ */
+test("scores correct, incorrect, unanswered, and unknown questions", () => {
+  // Build a quiz with one question in every scoring state.
+  const { document, api } = loadContentHarness();
+  const quiz = document.createElement("section");
+  const cases = [
+    { correct: "A", selected: ["A"], rationale: "Correct rationale" },
+    { correct: "B", selected: ["A"] },
+    { correct: "C", selected: [] },
+    { correct: "", selected: ["A"] }
+  ];
+
+  for (let index = 0; index < cases.length; index += 1) {
+    const question = document.createElement("div");
+    question.className = `${EXTENSION_PREFIX}-question`;
+    question.dataset.questionIndex = String(index);
+    question.dataset.correctLetters = cases[index].correct;
+    question.dataset.rationale = cases[index].rationale || "";
+    for (const letter of ["A", "B", "C"]) {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = letter;
+      input.dataset.optionText = `Option ${letter}`;
+      input.checked = cases[index].selected.includes(letter);
+      question.appendChild(input);
+    }
+    quiz.appendChild(question);
+  }
+
+  const score = api.calculateQuizScore(quiz);
+  assert.deepEqual(toPlain({
+    correct: score.correct,
+    total: score.total,
+    missing: score.missing,
+    unknown: score.unknown
+  }), { correct: 1, total: 3, missing: 1, unknown: 1 });
+  assert.deepEqual(toPlain(score.details.map((detail) => detail.status)), [
+    "correct",
+    "incorrect",
+    "unanswered",
+    "unknown"
+  ]);
+  assert.deepEqual(toPlain(score.details[0].selectedAnswers), [{ letter: "A", text: "Option A" }]);
+  assert.deepEqual(toPlain(api.normalizeSavedSelection(["A", "C"])), ["A", "C"]);
+  assert.deepEqual(toPlain(api.normalizeSavedSelection("B")), ["B"]);
+  assert.deepEqual(toPlain(api.normalizeSavedSelection(undefined)), []);
+  assert.deepEqual(toPlain(api.normalizeLetterList(" a, C, ")), ["A", "C"]);
+  assert.equal(api.areLetterSetsEqual(["C", "A"], ["A", "C"]), true);
+  assert.equal(api.areLetterSetsEqual(["A"], ["A", "C"]), false);
+  assert.equal(api.areLetterSetsEqual(["A"], ["B"]), false);
+  assert.equal(api.formatLetters(["A", "C"]), "A, C");
+});
+
+/**
+ * Verifies single-question score calculation for each terminal state.
+ */
+test("calculates individual question score states", () => {
+  // Reuse rendered question controls to validate question-local scoring.
+  const { document, api } = loadContentHarness();
+  const question = api.buildQuestionElement("single", {
+    prompt: "Pick one",
+    options: [{ letter: "A", text: "Alpha" }, { letter: "B", text: "Beta" }],
+    correctLetters: ["B"],
+    rationale: "B is correct.",
+    isSata: false
+  }, 2, {});
+  document.body.appendChild(question);
+
+  assert.equal(api.calculateQuestionScore(question).details[0].status, "unanswered");
+  question.querySelector("input[value='A']").checked = true;
+  assert.equal(api.calculateQuestionScore(question).details[0].status, "incorrect");
+  question.querySelector("input[value='B']").checked = true;
+  assert.equal(api.calculateQuestionScore(question).details[0].status, "correct");
+  question.dataset.correctLetters = "";
+  assert.equal(api.calculateQuestionScore(question).details[0].status, "unknown");
+});
+
+/**
+ * Verifies core UI builders produce stable ids and accessible controls.
+ */
+test("builds quiz ids, headers, notices, options, and paywall controls", () => {
+  // Create two assistant roots so fallback indexing can be asserted.
+  const { document, api } = loadContentHarness();
+  const firstRoot = document.createElement("div");
+  const secondRoot = document.createElement("div");
+  firstRoot.setAttribute("data-message-author-role", "assistant");
+  secondRoot.setAttribute("data-message-author-role", "assistant");
+  secondRoot.setAttribute("data-testid", "turn-2");
+  document.body.append(firstRoot, secondRoot);
+
+  assert.equal(api.getElementIndex(firstRoot), 0);
+  assert.equal(api.getElementIndex(document.createElement("div")), 0);
+  assert.equal(api.hashString("stable"), api.hashString("stable"));
+  assert.match(api.createQuizId(secondRoot, [{ prompt: "Prompt" }]), /^quiz-[a-z0-9]+$/);
+
+  const header = api.buildQuizHeader("quiz-id");
+  assert.match(header.textContent, /Select your answer/);
+  assert.equal(header.querySelector("input").dataset.quizId, "quiz-id");
+  assert.match(api.buildTrialNotice({ trialRemainingMs: 60000 }).textContent, /1 minute left/);
+
+  const option = api.buildOptionElement(
+    "quiz-id",
+    1,
+    "group",
+    { letter: "C", text: "Gamma" },
+    ["C"],
+    true
+  );
+  assert.equal(option.querySelector("input").type, "checkbox");
+  assert.equal(option.querySelector("input").checked, true);
+  assert.equal(option.querySelector("input").dataset.optionText, "Gamma");
+
+  const primary = api.buildPaywallButton("Pay", "openPaymentPage", true);
+  assert.equal(primary.type, "button");
+  assert.equal(primary.dataset.paywallAction, "openPaymentPage");
+  assert.equal(primary.classList.contains(`${EXTENSION_PREFIX}-paywall-button-primary`), true);
+  assert.match(api.getPaywallMessage({ status: "locked" }), /Pay \$5 once/);
+});
+
+/**
+ * Verifies score presentation helpers and empty score output.
+ */
+test("renders score feedback helper variants", () => {
+  // Exercise presentational helpers with complete, empty, and unknown data.
+  const { document, api } = loadContentHarness();
+  assert.equal(api.formatAnswerSummaries([{ letter: "A", text: "Alpha" }, { letter: "B" }]), "A. Alpha; B");
+  assert.equal(api.getScoreStatusLabel("correct"), "Correct");
+  assert.equal(api.getScoreStatusLabel("incorrect"), "Incorrect");
+  assert.equal(api.getScoreStatusLabel("unanswered"), "Unanswered");
+  assert.equal(api.getScoreStatusLabel("unknown"), "Not scored");
+
+  const feedback = api.buildAnswerFeedbackLine("Your answer", null, "None selected");
+  assert.equal(feedback.textContent, "Your answer:None selected");
+
+  const detail = api.buildScoreDetailElement({
+    questionNumber: 1,
+    status: "unknown",
+    selectedAnswers: [],
+    correctAnswers: [],
+    rationale: "Context only."
+  });
+  assert.match(detail.textContent, /Question 1: Not scored/);
+  assert.doesNotMatch(detail.textContent, /Correct answer/);
+  assert.match(detail.textContent, /Context only/);
+
+  const result = document.createElement("div");
+  result.textContent = "stale";
+  api.renderScoreResult(result, { correct: 0, total: 0, missing: 0, unknown: 1, details: [] });
+  assert.match(result.textContent, /No answer key was found/);
+});
+
+/**
+ * Verifies UI event handlers ignore invalid targets and score valid controls.
+ */
+test("handles score-mode and score-button UI events", () => {
+  // Build a real quiz so closest selectors and result rendering are exercised.
+  const { document, api } = loadContentHarness();
+  const quiz = api.buildQuizElement("events", [{
+    prompt: "Pick B",
+    options: [{ letter: "A", text: "Alpha" }, { letter: "B", text: "Beta" }],
+    correctLetters: ["B"],
+    rationale: "",
+    isSata: false
+  }], {}, { status: "paid" });
+  document.body.appendChild(quiz);
+
+  api.handleScoreEachQuestionToggle({ target: document.createElement("div") });
+  const toggle = quiz.querySelector(`.${EXTENSION_PREFIX}-score-mode-toggle input`);
+  toggle.checked = true;
+  api.handleScoreEachQuestionToggle({ target: toggle });
+  assert.equal(quiz.classList.contains(`${EXTENSION_PREFIX}-score-each-question-enabled`), true);
+
+  api.handleScoreClick({ target: document.createElement("div") });
+  const wholeQuizButton = quiz.querySelector(`.${EXTENSION_PREFIX}-actions button`);
+  api.handleScoreClick({ target: wholeQuizButton });
+  assert.match(wholeQuizButton.parentElement.textContent, /Score: 0\/1/);
+
+  const questionButton = quiz.querySelector(`.${EXTENSION_PREFIX}-question-score-button`);
+  api.handleQuestionScoreClick({ target: questionButton });
+  assert.match(quiz.querySelector(`.${EXTENSION_PREFIX}-question-score-result`).textContent, /Score: 0\/1/);
+});
+
+/**
+ * Verifies answer visibility restoration and nested original-output handling.
+ */
+test("restores answer lines and skips extension-owned original output", () => {
+  // Build source and extension nodes to isolate hide/restore filtering.
+  const { document, api } = loadContentHarness();
+  const root = document.createElement("div");
+  root.innerHTML = "<p>Answer: B</p><div><span>Original</span></div>";
+  const context = document.createElement("div");
+  context.className = `${EXTENSION_PREFIX}-context`;
+  root.appendChild(context);
+  document.body.appendChild(root);
+
+  api.hideAnswerLines(root);
+  assert.equal(root.querySelector("p").classList.contains(`${EXTENSION_PREFIX}-hidden-answer`), true);
+  api.restoreAnswerLines(root);
+  assert.equal(root.querySelector("p").classList.contains(`${EXTENSION_PREFIX}-hidden-answer`), false);
+  api.hideOriginalOutput(root, null);
+  assert.equal(context.hasAttribute(`data-${EXTENSION_PREFIX}-original-output`), false);
+});
+
+/**
+ * Verifies persistence reads, writes, context reuse, and radio changes.
+ */
+test("persists radio selections and reuses the conversation context node", async () => {
+  // Seed storage and verify direct persistence helpers before a radio event.
+  const { document, api, storage } = loadContentHarness({
+    url: "https://chatgpt.com/c/persistence"
+  });
+  const key = api.getStorageKey();
+  storage[key] = { existing: { 0: "A" } };
+  assert.deepEqual(toPlain(await api.readSelections()), { existing: { 0: "A" } });
+
+  await api.writeSelections({ replacement: { 0: "B" } });
+  assert.deepEqual(toPlain(storage[key]), { replacement: { 0: "B" } });
+  api.updateConversationContext(storage[key]);
+  const context = document.getElementById("mcq-radio-extension-conversation-context");
+  api.updateConversationContext({ updated: { 1: "C" } });
+  assert.equal(document.querySelectorAll("#mcq-radio-extension-conversation-context").length, 1);
+  assert.equal(JSON.parse(context.textContent).updated[1], "C");
+
+  const element = api.buildQuestionElement("radio-store", {
+    prompt: "Pick one",
+    options: [{ letter: "A", text: "Alpha" }, { letter: "B", text: "Beta" }],
+    correctLetters: ["B"],
+    rationale: "",
+    isSata: false
+  }, 0, {});
+  document.body.appendChild(element);
+  const radio = element.querySelector("input[value='B']");
+  await api.handleOptionChange({ target: document.createElement("div") });
+  await api.handleOptionChange({ target: radio });
+  assert.equal(storage[key]["radio-store"][0], "B");
+});
+
+/**
+ * Verifies access messaging, cache invalidation, and safe error normalization.
+ */
+test("handles access cache bypasses and runtime callback failures", async () => {
+  // Queue responses so cache and bypass behavior can be observed directly.
+  const { api, window, sentMessages } = loadContentHarness({
+    runtimeResponses: [
+      { ok: true, status: "trial" },
+      { ok: true, status: "paid" },
+      { ok: true, status: "locked" }
+    ]
+  });
+  assert.equal((await api.readAccessState(false)).status, "trial");
+  assert.equal((await api.readAccessState(true)).status, "paid");
+  api.clearAccessStateCache();
+  assert.equal((await api.readAccessState(false)).status, "locked");
+  assert.equal(sentMessages.length, 3);
+  assert.equal(api.isAccessLocked({ status: "paid" }), false);
+  assert.equal(api.isAccessLocked({ status: "trial" }), false);
+  assert.equal(api.isAccessLocked(null), true);
+  assert.equal(api.formatTrialRemaining(60 * 60000), "1 hour");
+  assert.equal(api.formatTrialRemaining(2 * 60000), "2 minutes");
+  assert.equal(api.getErrorMessage("plain failure"), "plain failure");
+  assert.equal(api.getErrorMessage(null), "Payment status is unavailable.");
+
+  const status = window.document.createElement("div");
+  api.setPaywallStatus(null, "ignored");
+  api.setPaywallStatus(status, "<b>safe</b>");
+  assert.equal(status.innerHTML, "&lt;b&gt;safe&lt;/b&gt;");
+
+  window.chrome.runtime.lastError = { message: "message failed" };
+  await assert.rejects(api.sendPaywallMessage("getAccessState"), /message failed/);
+});
+
+/**
+ * Verifies access-state read failures normalize to a cached locked-safe result.
+ */
+test("normalizes and caches access-state messaging failures", async () => {
+  // Force runtime messaging to fail and confirm repeated reads use the failure cache.
+  const { api, window, sentMessages } = loadContentHarness();
+  window.chrome.runtime.lastError = { message: "provider unavailable" };
+  const first = await api.readAccessState(false);
+  const second = await api.readAccessState(false);
+  assert.equal(first.status, "unknown");
+  assert.equal(first.error, "provider unavailable");
+  assert.equal(second.error, "provider unavailable");
+  assert.equal(sentMessages.length, 1);
+});
+
+/**
+ * Verifies paywall actions dispatch provider requests and refresh requests.
+ */
+test("handles paywall button actions and failures", async () => {
+  // Build a paywall and invoke its event handler with success and failure responses.
+  const successHarness = loadContentHarness({
+    runtimeResponses: [{ ok: true }]
+  });
+  const paywall = successHarness.api.buildPaywallElement({ status: "locked" });
+  successHarness.document.body.appendChild(paywall);
+  const payButton = paywall.querySelector("[data-paywall-action='openPaymentPage']");
+  await successHarness.api.handlePaywallAction({ currentTarget: payButton });
+  assert.equal(payButton.disabled, false);
+  assert.match(paywall.querySelector(`.${EXTENSION_PREFIX}-paywall-status`).textContent, /A new tab opened/);
+
+  const failureHarness = loadContentHarness({
+    runtimeResponses: [{ ok: false, error: "checkout failed" }]
+  });
+  const failedPaywall = failureHarness.api.buildPaywallElement({ status: "locked" });
+  failureHarness.document.body.appendChild(failedPaywall);
+  const failedButton = failedPaywall.querySelector("[data-paywall-action='openPaymentPage']");
+  await failureHarness.api.handlePaywallAction({ currentTarget: failedButton });
+  assert.equal(failedPaywall.querySelector(`.${EXTENSION_PREFIX}-paywall-status`).textContent, "checkout failed");
+  await failureHarness.api.handlePaywallAction({ currentTarget: failureHarness.document.createElement("div") });
+});
+
+/**
+ * Verifies orchestration helpers for storage changes and extension lifecycle.
+ */
+test("starts, stops, and applies enabled storage changes", () => {
+  // Build assistant source so stop can restore and clean generated state.
+  const { document, api } = loadContentHarness();
+  const root = document.createElement("div");
+  root.setAttribute("data-message-author-role", "assistant");
+  root.innerHTML = "<p>Question?</p><p>A. One</p><p>B. Two</p>";
+  document.body.appendChild(root);
+
+  api.start();
+  api.start();
+  api.handleStorageChange({}, "local");
+  api.handleStorageChange({ "mcq-radio-extension:enabled": { newValue: false } }, "sync");
+  api.handleStorageChange({ "mcq-radio-extension:enabled": { newValue: false } }, "local");
+  assert.equal(root.querySelectorAll(`.${EXTENSION_PREFIX}-quiz`).length, 0);
+  api.handleStorageChange({ "mcq-radio-extension:enabled": { newValue: true } }, "local");
+  api.stop();
+});
+
+/**
+ * Verifies mutation ownership decisions for empty and mixed node changes.
+ */
+test("classifies extension, empty, and mixed mutations", () => {
+  // Create representative mutation payloads without requiring a live observer.
+  const { document, api, window } = loadContentHarness();
+  const root = document.createElement("div");
+  root.setAttribute("data-message-author-role", "assistant");
+  const text = document.createTextNode("Text");
+  root.appendChild(text);
+  document.body.appendChild(root);
+
+  assert.equal(api.findAssistantRoot(text), root);
+  assert.equal(api.findAssistantRoot(document.createElement("div")), null);
+  assert.equal(api.isExtensionMutation({ target: root, addedNodes: [], removedNodes: [] }), false);
+
+  const extensionNode = document.createElement("section");
+  extensionNode.className = `${EXTENSION_PREFIX}-quiz`;
+  const ordinaryNode = document.createElement("p");
+  assert.equal(api.isExtensionMutation({
+    target: root,
+    addedNodes: [extensionNode, ordinaryNode],
+    removedNodes: []
+  }), false);
+
+  api.handleMutations([{
+    target: ordinaryNode,
+    addedNodes: [],
+    removedNodes: [],
+    type: "characterData"
+  }]);
+  assert.equal(window.document, document);
 });

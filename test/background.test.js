@@ -287,3 +287,90 @@ test("normalizes dates, trial math, and serializable responses", async () => {
   });
   assert.equal(api.getErrorMessage(null), "Payment status is unavailable.");
 });
+
+/**
+ * Verifies malformed messages and asynchronous provider failures are handled safely.
+ */
+test("rejects malformed runtime messages and serializes route failures", async () => {
+  // Configure payment opening to fail after the runtime route accepts the message.
+  const extpay = {
+    startBackground() {
+      // Keep service-worker startup inert in the test harness.
+    },
+    async getUser() {
+      // Return a paid user for unrelated access-state behavior.
+      return { paid: true, installedAt: new Date().toISOString() };
+    },
+    async openPaymentPage() {
+      // Simulate a provider failure from the checkout action.
+      throw new Error("checkout unavailable");
+    },
+    async openLoginPage() {
+      // Keep the login action available for the client shape.
+    }
+  };
+  const { api } = loadBackgroundHarness({ extpay });
+
+  assert.equal(api.handleRuntimeMessage(null, {}, () => {}), undefined);
+  assert.equal(api.handleRuntimeMessage({ type: 42 }, {}, () => {}), undefined);
+
+  const response = await new Promise((resolve) => {
+    // Exercise the runtime handler's rejected-route catch branch.
+    const keepOpen = api.handleRuntimeMessage({
+      type: `${EXTENSION_PREFIX}:openPaymentPage`
+    }, {}, resolve);
+    assert.equal(keepOpen, true);
+  });
+  assert.deepEqual(toPlain(response), {
+    ok: false,
+    status: "unknown",
+    error: "checkout unavailable"
+  });
+});
+
+/**
+ * Verifies ExtensionPay client creation and date helper edge cases.
+ */
+test("creates provider clients and handles date edge cases", async () => {
+  // Use a complete provider mock so client creation can be compared by identity.
+  const { api, extpay } = loadBackgroundHarness();
+  assert.equal(api.createExtPayClient(), extpay);
+
+  const onlyDate = new Date("2026-01-01T00:00:00.000Z");
+  assert.equal(api.getEarliestDate(null, onlyDate, new Date("invalid")).toISOString(), onlyDate.toISOString());
+  assert.equal(api.normalizeDate("2026-02-03T04:05:06.000Z").toISOString(), "2026-02-03T04:05:06.000Z");
+  assert.equal(api.normalizeDate(undefined), null);
+  assert.equal(api.getTrialRemainingMs(new Date(Date.now() + 1000)) > DAY_MS, true);
+});
+
+/**
+ * Verifies invalid saved install dates are replaced and response fallbacks serialize.
+ */
+test("replaces invalid install dates and normalizes response fallbacks", async () => {
+  // Seed an invalid date so ensureLocalInstalledAt must replace it.
+  const { api, storage } = loadBackgroundHarness({
+    storage: { [LOCAL_INSTALL_KEY]: "invalid" }
+  });
+  const installedAt = await api.ensureLocalInstalledAt();
+  assert.equal(Number.isNaN(installedAt.getTime()), false);
+  assert.equal(storage[LOCAL_INSTALL_KEY], installedAt.toISOString());
+
+  const response = api.createAccessResponse("trial", installedAt, 100, {
+    email: "",
+    paidAt: "invalid"
+  }, "provider warning");
+  assert.deepEqual(toPlain(response), {
+    ok: false,
+    status: "trial",
+    installedAt: installedAt.toISOString(),
+    trialRemainingMs: 100,
+    email: null,
+    paidAt: null,
+    error: "provider warning"
+  });
+  assert.deepEqual(toPlain(api.createErrorResponse("plain error")), {
+    ok: false,
+    status: "unknown",
+    error: "plain error"
+  });
+});
