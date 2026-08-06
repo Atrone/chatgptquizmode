@@ -257,16 +257,16 @@ globalThis.McqQuiz.createUi = function createUi(config) {
     example.className = `${EXTENSION_PREFIX}-reliability-tip-example`;
     example.textContent = `Question 1
 
-A 35-year-old client at 28 weeks’ gestation has pre-eclampsia, fetal growth restriction, and abnormal uteroplacental Doppler findings. Placental examination later shows infarcted areas and acute atherosis. Which explanation best describes the significance of these placental changes?
+Question Stem
 
-A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia
-B. They indicate excessive placental blood flow and fetal hyperoxygenation
-C. They result from maternal hypervolemia without endothelial injury
-D. They confirm that pre-eclampsia originated from fetal hypertension
+A. Option A
+B. Option B
+C. Option C
+D. Option D
 
-Answer: A. They reflect high-resistance placental vessels and chronic uteroplacental ischemia.
+Answer: Option X
 
-Rationale: Inadequate spiral-artery remodelling leaves placental vessels thick-walled and high resistance. Reduced perfusion promotes hypoxia, acute atherosis, infarction, and impaired fetal growth.`;
+Rationale: One to two sentences explaining the answer and the other choices.`;
     content.appendChild(example);
     tip.appendChild(content);
 
