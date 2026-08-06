@@ -259,6 +259,58 @@ test("keeps pharmacokinetic range options attached to their questions", () => {
   assert.equal(questions[2].options[3].text, "21 - 22 days");
 });
 
+test("keeps repeated single-answer option text from turning questions into SATA", () => {
+  // Reproduce answer lines whose option text contains the standalone article "a".
+  const { api } = loadContentHarness();
+  const questions = api.parseMultipleChoiceQuestions(`
+    Question 1:
+    Which assessment finding is most characteristic of placenta previa?
+    A. Painful vaginal bleeding with a firm, tender uterus
+    B. Painless, bright-red vaginal bleeding with a soft uterus
+    C. Dark vaginal bleeding accompanied by frequent contractions
+    D. Absent vaginal bleeding with sudden maternal hypotension
+    Answer: B. Painless, bright-red vaginal bleeding with a soft uterus.
+    Rationale: Placenta previa typically causes painless, bright-red bleeding, and the uterus usually remains soft and nontender.
+    Question 2:
+    Which finding would most strongly support a diagnosis of placental abruption rather than placenta previa?
+    A. Soft, relaxed, nontender uterus
+    B. Painless, bright-red vaginal bleeding
+    C. Abdominal pain with a firm, tender uterus
+    D. Fetal malpresentation without uterine contractions
+    Answer: C. Abdominal pain with a firm, tender uterus.
+    Rationale: Placental abruption classically causes abdominal or back pain, uterine tenderness, increased uterine tone, and frequent contractions.
+    Question 3:
+    A client at 34 weeks' gestation arrives with painless vaginal bleeding. Placenta previa is suspected. Which nursing action is most important?
+    A. Perform a digital vaginal examination to assess cervical dilation
+    B. Apply an internal fetal scalp electrode
+    C. Assess maternal vital signs and initiate continuous fetal monitoring
+    D. Encourage the client to walk to determine whether bleeding increases
+    Answer: C. Assess maternal vital signs and initiate continuous fetal monitoring.
+    Rationale: A digital vaginal examination is contraindicated because it may disrupt the placenta and cause severe hemorrhage.
+    Question 4:
+    A postpartum client has heavy vaginal bleeding and a boggy uterus. Which action should the nurse perform first?
+    A. Massage the uterine fundus
+    B. Prepare the client for immediate hysterectomy
+    C. Inspect the birth canal for lacerations
+    D. Administer methylergonovine without checking blood pressure
+    Answer: A. Massage the uterine fundus.
+    Rationale: A boggy uterus indicates uterine atony, the leading cause of early postpartum hemorrhage.
+    Question 5:
+    A postpartum client continues to bleed heavily despite fundal massage and oxytocin. The uterus remains boggy. The client has a history of asthma. Which medication should the nurse question?
+    A. Tranexamic acid
+    B. Carboprost
+    C. Misoprostol
+    D. Additional oxytocin as prescribed
+    Answer: B. Carboprost.
+    Rationale: Carboprost is a prostaglandin that can cause bronchoconstriction and should be avoided in clients with asthma.
+  `);
+
+  // Every item has one explicit answer and must therefore render as a radio-button question.
+  assert.equal(questions.length, 5);
+  assert.deepEqual(toPlain(questions.map((question) => question.correctLetters)), [["B"], ["C"], ["C"], ["A"], ["B"]]);
+  assert.deepEqual(toPlain(questions.map((question) => question.isSata)), [false, false, false, false, false]);
+});
+
 test("covers low-level parsing and formatting helpers", () => {
   // Load helper functions from the content script.
   const { api, window } = loadContentHarness();
@@ -588,6 +640,9 @@ test("parses common ChatGPT answer-line formats at each question end", () => {
     "Answer: Option B",
     "Answer: Choice B",
     "Answer: B. Beta",
+    "Answer: B - Beta is a single answer.",
+    "Answer: B – Beta is a single answer.",
+    "Answer: B — Beta is a single answer.",
     "Answer: B - because Beta is correct.",
     "Answer: B — since Beta is correct.",
     "Correct answer: B; Rationale: Beta is correct."
@@ -603,6 +658,7 @@ test("parses common ChatGPT answer-line formats at each question end", () => {
     ].join("\n"));
     assert.equal(questions.length, 1, answerLine);
     assert.deepEqual(toPlain(questions[0].correctLetters), ["B"], answerLine);
+    assert.equal(questions[0].isSata, false, answerLine);
   }
 });
 

@@ -666,6 +666,15 @@ globalThis.McqQuiz.createParser = function createParser(config) {
       };
     }
 
+    // Treat text after a leading answer and punctuation as repeated option text, not more answer letters.
+    const repeatedOptionMatch = body.match(/^\s*(?:(?:option|choice)\s+)?[\(\[]?([A-Z])[\)\]]?\s*(?:[\.\)]|[-–—])\s+.+$/i);
+    if (repeatedOptionMatch) {
+      return {
+        answerText: repeatedOptionMatch[1].toUpperCase(),
+        rationale: ""
+      };
+    }
+
     // Return the original body when no rationale marker is present.
     return {
       answerText: body,
