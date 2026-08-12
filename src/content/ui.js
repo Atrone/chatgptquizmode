@@ -10,7 +10,7 @@ globalThis.McqQuiz.createUi = function createUi(config) {
   // Resolve ordered services only after their factories have initialized.
   const services = globalThis.McqQuiz.services;
   const { isAnswerLine } = services.parser;
-  const { formatTrialRemaining, handlePaywallAction } = services.access;
+  const { handlePaywallAction } = services.access;
   const { handleOptionChange } = services.persistence;
   const { normalizeSavedSelection, calculateQuizScore, calculateQuestionScore } = services.scoring;
   const {
@@ -156,7 +156,7 @@ globalThis.McqQuiz.createUi = function createUi(config) {
    * @param {string} quizId - Stable quiz id.
    * @param {Array<{prompt: string, options: Array<{letter: string, text: string}>, correctLetters: string[], rationale: string, isSata: boolean}>} questions - Parsed questions.
    * @param {Record<string, Record<string, string>>} savedSelections - Stored selections by quiz id.
-   * @param {{status?: string, trialRemainingMs?: number}} accessState - Current paywall access state.
+   * @param {{status?: string}} accessState - Current paywall access state.
    * @returns {HTMLElement} Renderable quiz container.
    */
   function buildQuizElement(quizId, questions, savedSelections, accessState) {
@@ -172,9 +172,9 @@ globalThis.McqQuiz.createUi = function createUi(config) {
     // Recommend a prompt format that lets the parser match answers more reliably.
     quiz.appendChild(buildReliabilityTip());
 
-    // Show trial status without interrupting the quiz while access is still valid.
-    if (accessState?.status === "trial") {
-      quiz.appendChild(buildTrialNotice(accessState));
+    // Identify the one free quiz without interrupting its controls.
+    if (accessState?.status === "free") {
+      quiz.appendChild(buildFreeQuizNotice());
     }
 
     // Render each parsed question with an independent control group.
@@ -302,25 +302,24 @@ Rationale: One to two sentences explaining the answer and the other choices.`;
   }
 
   /**
-   * Builds a short notice for users still inside the 24-hour free trial.
+   * Builds a short notice for the user's single free quiz.
    *
-   * @param {{trialRemainingMs?: number}} accessState - Current trial timing state.
-   * @returns {HTMLElement} Trial notice element.
+   * @returns {HTMLElement} Free-quiz notice element.
    */
-  function buildTrialNotice(accessState) {
+  function buildFreeQuizNotice() {
     // Create a compact notice that matches the existing quiz card.
     const notice = document.createElement("div");
-    notice.className = `${EXTENSION_PREFIX}-trial-notice`;
+    notice.className = `${EXTENSION_PREFIX}-free-quiz-notice`;
 
-    // Explain the deadline and price before the paywall appears.
-    notice.textContent = `${formatTrialRemaining(accessState.trialRemainingMs || 0)} left in your free trial. After that, unlock lifetime access for $5.`;
+    // Explain that future quizzes require the one-time purchase.
+    notice.textContent = "This is your free quiz. Unlock lifetime access for $5 to use Quiz Mode on future quizzes.";
 
     // Return the finished notice for insertion near the quiz title.
     return notice;
   }
 
   /**
-   * Builds the locked paywall UI shown after the 24-hour trial expires.
+   * Builds the locked paywall UI shown after the free quiz is used.
    *
    * @param {{status?: string, error?: string}} accessState - Current paywall access state.
    * @returns {HTMLElement} Paywall panel element.
@@ -390,11 +389,11 @@ Rationale: One to two sentences explaining the answer and the other choices.`;
   function getPaywallMessage(accessState) {
     // Explain provider outages separately from normal locked access.
     if (accessState?.status === "unknown") {
-      return "Your 24-hour trial has ended, and payment status could not be verified. Retry status, pay $5, or log in with the email you used to pay.";
+      return "Your free quiz has been used, and payment status could not be verified. Retry status, pay $5, or log in with the email you used to pay.";
     }
 
-    // Default locked copy for expired unpaid trials.
-    return "Your 24-hour free trial has ended. Pay $5 once to unlock this extension on your account, or log in if you already paid.";
+    // Default locked copy for unpaid users after their free quiz.
+    return "You have used your free quiz. Pay $5 once to unlock this extension on your account, or log in if you already paid.";
   }
 
   /**
@@ -825,7 +824,7 @@ Rationale: One to two sentences explaining the answer and the other choices.`;
     buildQuizHeader,
     buildReliabilityTip,
     buildScoreEachQuestionToggle,
-    buildTrialNotice,
+    buildFreeQuizNotice,
     buildPaywallElement,
     buildPaywallButton,
     getPaywallMessage,

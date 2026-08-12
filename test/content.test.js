@@ -368,8 +368,6 @@ test("covers low-level parsing and formatting helpers", () => {
   assert.equal(api.isExplanationBoundary("Next steps:"), true);
   assert.equal(api.createPrompt([], 2), "Question 3");
   assert.equal(api.isAnswerLine("Correct answer: B"), true);
-  assert.equal(api.formatTrialRemaining(65 * 60000), "2 hours");
-  assert.equal(api.formatTrialRemaining(30 * 1000), "1 minute");
   assert.equal(api.getErrorMessage(new window.Error("boom")), "boom");
 });
 
@@ -394,7 +392,7 @@ test("renders quiz controls, hides source output, and scores selections", () => 
       0: "B",
       1: ["A", "C"]
     }
-  }, { status: "trial", trialRemainingMs: 3600000 });
+  }, { status: "free" });
   document.body.appendChild(quiz);
   assert.equal(quiz.querySelectorAll(`.${EXTENSION_PREFIX}-question`).length, 2);
   assert.deepEqual(
@@ -403,7 +401,7 @@ test("renders quiz controls, hides source output, and scores selections", () => 
   );
   assert.equal(quiz.querySelectorAll("input[type='radio']:checked").length, 1);
   assert.equal(quiz.querySelectorAll("input[type='checkbox']:checked").length, 2);
-  assert.match(quiz.textContent, /left in your free trial/);
+  assert.match(quiz.textContent, /This is your free quiz/);
   // Keep the long reliability guidance collapsed and split into scannable sections.
   const reliabilityTip = quiz.querySelector(`.${EXTENSION_PREFIX}-reliability-tip`);
   assert.equal(reliabilityTip.tagName, "DETAILS");
@@ -484,7 +482,7 @@ test("processes assistant roots for paid and locked access states", async () => 
 
   // Exercise the locked path to confirm paywall rendering replaces quiz controls.
   const lockedHarness = loadContentHarness({
-    runtimeResponses: [{ ok: true, status: "locked", trialRemainingMs: 0 }]
+    runtimeResponses: [{ ok: true, status: "locked" }]
   });
   const lockedRoot = lockedHarness.document.createElement("div");
   lockedRoot.setAttribute("data-message-author-role", "assistant");
@@ -588,15 +586,16 @@ test("stores option changes and mirrors conversation context", async () => {
 test("handles paywall helpers, access caching, placeholders, and mutation ownership", async () => {
   // Load the content script with one access-state response to verify caching.
   const { document, window, api, sentMessages } = loadContentHarness({
-    runtimeResponses: [{ ok: true, status: "trial", trialRemainingMs: 60000 }]
+    runtimeResponses: [{ ok: true, status: "free" }]
   });
-  const firstAccess = await api.readAccessState(false);
-  const secondAccess = await api.readAccessState(false);
-  assert.equal(firstAccess.status, "trial");
-  assert.equal(secondAccess.status, "trial");
+  const firstAccess = await api.readAccessState(false, "quiz-one");
+  const secondAccess = await api.readAccessState(false, "quiz-one");
+  assert.equal(firstAccess.status, "free");
+  assert.equal(secondAccess.status, "free");
   assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].quizId, "quiz-one");
   assert.equal(api.isAccessLocked({ status: "unknown" }), true);
-  assert.equal(api.getPaywallMessage({ status: "unknown" }).startsWith("Your 24-hour trial has ended"), true);
+  assert.equal(api.getPaywallMessage({ status: "unknown" }).startsWith("Your free quiz has been used"), true);
 
   // Verify streaming placeholders are reused and removed.
   const root = document.createElement("div");
@@ -1140,7 +1139,7 @@ test("builds quiz ids, headers, notices, options, and paywall controls", () => {
   const header = api.buildQuizHeader("quiz-id");
   assert.match(header.textContent, /Select your answer/);
   assert.equal(header.querySelector("input").dataset.quizId, "quiz-id");
-  assert.match(api.buildTrialNotice({ trialRemainingMs: 60000 }).textContent, /1 minute left/);
+  assert.match(api.buildFreeQuizNotice().textContent, /This is your free quiz/);
 
   const option = api.buildOptionElement(
     "quiz-id",
@@ -1286,21 +1285,21 @@ test("handles access cache bypasses and runtime callback failures", async () => 
   // Queue responses so cache and bypass behavior can be observed directly.
   const { api, window, sentMessages } = loadContentHarness({
     runtimeResponses: [
-      { ok: true, status: "trial" },
+      { ok: true, status: "free" },
       { ok: true, status: "paid" },
       { ok: true, status: "locked" }
     ]
   });
-  assert.equal((await api.readAccessState(false)).status, "trial");
-  assert.equal((await api.readAccessState(true)).status, "paid");
+  assert.equal((await api.readAccessState(false, "quiz-one")).status, "free");
+  assert.equal((await api.readAccessState(true, "quiz-one")).status, "paid");
   api.clearAccessStateCache();
-  assert.equal((await api.readAccessState(false)).status, "locked");
+  assert.equal((await api.readAccessState(false, "quiz-two")).status, "locked");
   assert.equal(sentMessages.length, 3);
+  assert.deepEqual(sentMessages.map((message) => message.quizId), ["quiz-one", "quiz-one", "quiz-two"]);
   assert.equal(api.isAccessLocked({ status: "paid" }), false);
-  assert.equal(api.isAccessLocked({ status: "trial" }), false);
+  assert.equal(api.isAccessLocked({ status: "free" }), false);
+  assert.equal(api.isAccessLocked({ status: "trial" }), true);
   assert.equal(api.isAccessLocked(null), true);
-  assert.equal(api.formatTrialRemaining(60 * 60000), "1 hour");
-  assert.equal(api.formatTrialRemaining(2 * 60000), "2 minutes");
   assert.equal(api.getErrorMessage("plain failure"), "plain failure");
   assert.equal(api.getErrorMessage(null), "Payment status is unavailable.");
 
@@ -1320,8 +1319,8 @@ test("normalizes and caches access-state messaging failures", async () => {
   // Force runtime messaging to fail and confirm repeated reads use the failure cache.
   const { api, window, sentMessages } = loadContentHarness();
   window.chrome.runtime.lastError = { message: "provider unavailable" };
-  const first = await api.readAccessState(false);
-  const second = await api.readAccessState(false);
+  const first = await api.readAccessState(false, "quiz-one");
+  const second = await api.readAccessState(false, "quiz-one");
   assert.equal(first.status, "unknown");
   assert.equal(first.error, "provider unavailable");
   assert.equal(second.error, "provider unavailable");
@@ -1408,7 +1407,7 @@ test("initializes, schedules, scans, and refreshes assistant roots", async () =>
   // Rebuild a locked root directly after a fresh paid access check.
   const refreshHarness = loadContentHarness({
     runtimeResponses: [
-      { ok: true, status: "locked", trialRemainingMs: 0 },
+      { ok: true, status: "locked" },
       { ok: true, status: "paid" },
       { ok: true, status: "paid" }
     ]

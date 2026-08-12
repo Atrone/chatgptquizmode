@@ -355,8 +355,9 @@
     // Hide answer-key lines before adding selectable options.
     hideAnswerLines(root);
 
-    // Gate the quiz UI after parsing so normal non-MCQ replies stay untouched.
-    const accessState = await readAccessState(false);
+    // Build a stable identifier before access checks so one specific quiz can be free.
+    const quizId = createQuizId(root, questions);
+    const accessState = await readAccessState(false, quizId);
     if (!extensionEnabled) {
       processingRoots.delete(root);
       restoreAnswerLines(root);
@@ -373,8 +374,7 @@
       return;
     }
 
-    // Build a stable identifier from the conversation URL and response location.
-    const quizId = createQuizId(root, questions);
+    // Restore saved choices before building the accessible quiz.
     const savedSelections = await readSelections();
     if (!extensionEnabled) {
       processingRoots.delete(root);

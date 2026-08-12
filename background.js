@@ -3,29 +3,12 @@ importScripts("ExtPay.js");
 // Keep provider configuration in one place for ExtensionPay setup.
 const EXTENSIONPAY_EXTENSION_ID = "chatgpt-quiz-mode-interactive-mcqs";
 const EXTENSION_PREFIX = "mcq-radio-extension";
-const TRIAL_DURATION_MS = 24 * 60 * 60 * 1000;
-const LOCAL_INSTALL_KEY = `${EXTENSION_PREFIX}:installedAt`;
+const FREE_QUIZ_KEY = `${EXTENSION_PREFIX}:freeQuizId`;
+let freeQuizClaimQueue = Promise.resolve();
 
 // Initialize ExtensionPay background handling once when the service worker starts.
 const backgroundExtPay = ExtPay(EXTENSIONPAY_EXTENSION_ID);
 backgroundExtPay.startBackground();
-
-/**
- * Stores a fallback install timestamp when Chrome first installs the extension.
- *
- * @param {chrome.runtime.InstalledDetails} details - Chrome install/update metadata.
- */
-function handleInstalled(details) {
-  // Only first installs should start a new local fallback trial.
-  if (details.reason !== "install") {
-    return;
-  }
-
-  // Persist an install timestamp for local development and provider outages.
-  chrome.storage.local.set({
-    [LOCAL_INSTALL_KEY]: new Date().toISOString()
-  });
-}
 
 /**
  * Handles content-script requests for paywall state and payment actions.
@@ -55,7 +38,7 @@ function handleRuntimeMessage(message, sender, sendResponse) {
 /**
  * Routes a single paywall API message to the appropriate provider action.
  *
- * @param {{type: string}} message - Namespaced paywall message.
+ * @param {{type: string, quizId?: string}} message - Namespaced paywall message.
  * @returns {Promise<Record<string, unknown>>} Serializable response payload.
  */
 async function handlePaywallMessage(message) {
@@ -64,7 +47,7 @@ async function handlePaywallMessage(message) {
 
   // Expose the current access state to ChatGPT content scripts.
   if (message.type === `${EXTENSION_PREFIX}:getAccessState`) {
-    return getAccessState(extpay);
+    return getAccessState(extpay, message.quizId);
   }
 
   // Open ExtensionPay's payment picker so the Pay Now button appears directly.
@@ -92,43 +75,90 @@ async function handlePaywallMessage(message) {
 }
 
 /**
- * Computes the current paid/trial/locked access state for quiz rendering.
+ * Computes the current paid/free/locked access state for quiz rendering.
  *
  * @param {{getUser: Function}} extpay - ExtensionPay client for this callback.
+ * @param {unknown} quizId - Stable identifier for the quiz requesting access.
  * @returns {Promise<Record<string, unknown>>} Serializable paywall state.
  */
-async function getAccessState(extpay) {
-  // Ensure the local fallback install time exists before checking provider state.
-  const fallbackInstalledAt = await ensureLocalInstalledAt();
-
+async function getAccessState(extpay, quizId) {
   try {
-    // Ask ExtensionPay for the account-backed paid and install status.
+    // Ask ExtensionPay for the account-backed paid status.
     const user = await extpay.getUser();
-    const installedAt = getEarliestDate(normalizeDate(user.installedAt), fallbackInstalledAt);
-    const trialRemainingMs = getTrialRemainingMs(installedAt);
 
     // Paid accounts should always get full access.
     if (user.paid) {
-      return createAccessResponse("paid", installedAt, trialRemainingMs, user);
+      return createAccessResponse("paid", user);
     }
 
-    // Unpaid users can use the extension during the first 24 hours.
-    if (trialRemainingMs > 0) {
-      return createAccessResponse("trial", installedAt, trialRemainingMs, user);
+    // Give unpaid users access only when this is their one claimed free quiz.
+    if (await claimFreeQuiz(quizId)) {
+      return createAccessResponse("free", user);
     }
 
-    // After the trial ends, unpaid users must complete checkout or login.
-    return createAccessResponse("locked", installedAt, 0, user);
+    // After one quiz, unpaid users must complete checkout or login.
+    return createAccessResponse("locked", user);
   } catch (error) {
-    // Provider failures still allow the local trial but do not unlock expired users.
-    const trialRemainingMs = getTrialRemainingMs(fallbackInstalledAt);
-    if (trialRemainingMs > 0) {
-      return createAccessResponse("trial", fallbackInstalledAt, trialRemainingMs, null, error);
+    // Provider failures still allow the claimed free quiz but do not unlock others.
+    if (await claimFreeQuiz(quizId)) {
+      return createAccessResponse("free", null, error);
     }
 
-    // Expired users need a retry/payment path when provider status is unavailable.
-    return createAccessResponse("unknown", fallbackInstalledAt, 0, null, error);
+    // Users beyond the free quiz need a retry/payment path during provider outages.
+    return createAccessResponse("unknown", null, error);
   }
+}
+
+/**
+ * Claims the single free quiz or verifies that the requesting quiz owns it.
+ *
+ * @param {unknown} quizId - Stable identifier for the quiz requesting access.
+ * @returns {Promise<boolean>} Whether the quiz is the user's free quiz.
+ */
+function claimFreeQuiz(quizId) {
+  // Reject missing identifiers so malformed requests cannot bypass the paywall.
+  const normalizedQuizId = typeof quizId === "string" ? quizId.trim() : "";
+  if (!normalizedQuizId) {
+    return Promise.resolve(false);
+  }
+
+  // Serialize storage updates so simultaneous page scans cannot claim multiple quizzes.
+  const claim = freeQuizClaimQueue.then(readOrClaimFreeQuiz.bind(null, normalizedQuizId));
+
+  // Keep the queue usable even if an individual storage operation fails.
+  freeQuizClaimQueue = claim.catch(ignoreClaimFailure);
+  return claim;
+}
+
+/**
+ * Reads the current free-quiz claim and creates it when none exists.
+ *
+ * @param {string} quizId - Normalized quiz identifier requesting the claim.
+ * @returns {Promise<boolean>} Whether this quiz owns the free claim.
+ */
+async function readOrClaimFreeQuiz(quizId) {
+  // Reuse the existing claim when this exact quiz is rendered again.
+  const result = await chrome.storage.local.get(FREE_QUIZ_KEY);
+  const claimedQuizId = typeof result[FREE_QUIZ_KEY] === "string" ? result[FREE_QUIZ_KEY] : "";
+  if (claimedQuizId) {
+    return claimedQuizId === quizId;
+  }
+
+  // Persist the first quiz before granting its free access.
+  await chrome.storage.local.set({
+    [FREE_QUIZ_KEY]: quizId
+  });
+  return true;
+}
+
+/**
+ * Prevents one failed storage operation from permanently rejecting the claim queue.
+ *
+ * @returns {undefined} An empty queue recovery value.
+ */
+function ignoreClaimFailure() {
+  // Resolve the internal queue while the original claim still reports its failure.
+  return undefined;
 }
 
 /**
@@ -139,45 +169,6 @@ async function getAccessState(extpay) {
 function createExtPayClient() {
   // ExtensionPay recommends redeclaring the client inside MV3 callbacks.
   return ExtPay(EXTENSIONPAY_EXTENSION_ID);
-}
-
-/**
- * Selects the earliest valid date so local install history cannot extend trials.
- *
- * @param {...(Date | null)} dates - Candidate install timestamps.
- * @returns {Date} Earliest valid date.
- */
-function getEarliestDate(...dates) {
-  // Remove invalid or unavailable dates before comparing timestamps.
-  const validDates = dates.filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
-
-  // Return the oldest valid install timestamp.
-  return validDates.reduce((earliest, date) => (date.getTime() < earliest.getTime() ? date : earliest));
-}
-
-/**
- * Ensures a local fallback install timestamp exists in Chrome storage.
- *
- * @returns {Promise<Date>} Stored or newly-created fallback install date.
- */
-async function ensureLocalInstalledAt() {
-  // Read the saved fallback timestamp from extension storage.
-  const result = await chrome.storage.local.get(LOCAL_INSTALL_KEY);
-  const existingDate = normalizeDate(result[LOCAL_INSTALL_KEY]);
-
-  // Reuse valid stored dates to avoid resetting trials.
-  if (existingDate) {
-    return existingDate;
-  }
-
-  // Store a new timestamp if development loading skipped the install event.
-  const installedAt = new Date();
-  await chrome.storage.local.set({
-    [LOCAL_INSTALL_KEY]: installedAt.toISOString()
-  });
-
-  // Return the fallback date used for this browser profile.
-  return installedAt;
 }
 
 /**
@@ -200,33 +191,18 @@ function normalizeDate(value) {
 }
 
 /**
- * Calculates how much time remains in the 24-hour install trial.
- *
- * @param {Date} installedAt - First install timestamp.
- * @returns {number} Remaining trial time in milliseconds.
- */
-function getTrialRemainingMs(installedAt) {
-  // Clamp negative values to zero so expired trials are unambiguous.
-  return Math.max(0, TRIAL_DURATION_MS - (Date.now() - installedAt.getTime()));
-}
-
-/**
  * Creates a serializable access-state response for content scripts.
  *
  * @param {string} status - Access status for UI gating.
- * @param {Date} installedAt - Install timestamp used for the decision.
- * @param {number} trialRemainingMs - Remaining trial time in milliseconds.
  * @param {{email?: string | null, paidAt?: Date | null} | null} user - Optional ExtensionPay user.
  * @param {unknown} [error] - Optional provider error.
  * @returns {Record<string, unknown>} Serializable access response.
  */
-function createAccessResponse(status, installedAt, trialRemainingMs, user, error) {
+function createAccessResponse(status, user, error) {
   // Keep the response small and free of non-serializable Date objects.
   const response = {
     ok: !error,
     status,
-    installedAt: installedAt.toISOString(),
-    trialRemainingMs,
     email: user?.email || null,
     paidAt: user?.paidAt ? normalizeDate(user.paidAt)?.toISOString() || null : null
   };
@@ -274,20 +250,16 @@ function getErrorMessage(error) {
 // Expose private helpers only when the unit-test harness explicitly asks for them.
 if (globalThis.__MCQ_RADIO_EXTENSION_ENABLE_TEST_API__) {
   globalThis.__mcqRadioExtensionBackgroundTestApi = {
-    handleInstalled,
     handleRuntimeMessage,
     handlePaywallMessage,
     getAccessState,
+    claimFreeQuiz,
     createExtPayClient,
-    getEarliestDate,
-    ensureLocalInstalledAt,
     normalizeDate,
-    getTrialRemainingMs,
     createAccessResponse,
     createErrorResponse,
     getErrorMessage
   };
 } else {
-  chrome.runtime.onInstalled.addListener(handleInstalled);
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
 }

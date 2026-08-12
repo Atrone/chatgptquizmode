@@ -15,7 +15,7 @@ A small Manifest V3 Chrome extension that detects multiple-choice-question style
 - Stores selected answers with `chrome.storage.local`, scoped to the current conversation URL.
 - Mirrors the stored selections into a hidden page element named `mcq-radio-extension-conversation-context` so the current conversation page has a DOM-level context copy.
 - Provides an extension popup switch that turns quiz mode on or off immediately.
-- Allows a 24-hour trial after install, then requires a one-time $5 account unlock through ExtensionPay/Stripe.
+- Allows one free quiz, then requires a one-time $5 account unlock through ExtensionPay/Stripe.
 
 ## Load In Chrome
 
@@ -35,7 +35,7 @@ This extension uses [ExtensionPay](https://extensionpay.com/) for account-backed
 4. Enable Google Pay in Stripe payment methods where available, so eligible users see Google Pay in the hosted checkout.
 5. Enable ExtensionPay login/reactivation by email so paid users can unlock access across browser profiles or devices.
 
-The quiz controls render normally during the first 24 hours after install. After that, unpaid users see a paywall with **Pay Now - $5**, **I already paid**, and **Retry status** actions.
+Quiz controls render normally for one free quiz and remain available for that same quiz on reload. Other quizzes show unpaid users a paywall with **Pay Now - $5**, **I already paid**, and **Retry status** actions.
 
 ## Example ChatGPT Output
 

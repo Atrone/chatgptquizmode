@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const BACKGROUND_SCRIPT_PATH = join(__dirname, "..", "background.js");
 const BACKGROUND_SCRIPT_SOURCE = readFileSync(BACKGROUND_SCRIPT_PATH, "utf8");
 const EXTENSION_PREFIX = "mcq-radio-extension";
-const LOCAL_INSTALL_KEY = `${EXTENSION_PREFIX}:installedAt`;
+const FREE_QUIZ_KEY = `${EXTENSION_PREFIX}:freeQuizId`;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -131,19 +131,24 @@ function loadBackgroundHarness(options = {}) {
   };
 }
 
-test("handles install events without resetting non-install profiles", async () => {
-  // Load the background helpers and call the install handler directly.
+test("claims one free quiz and preserves it across checks", async () => {
+  // Load the background helpers with empty local storage.
   const { api, storage, installedListeners, messageListeners } = loadBackgroundHarness();
   assert.equal(installedListeners.length, 0);
   assert.equal(messageListeners.length, 0);
 
-  // Non-install events should leave the fallback install key untouched.
-  api.handleInstalled({ reason: "update" });
-  assert.equal(storage[LOCAL_INSTALL_KEY], undefined);
+  // Simultaneous identifiers must still produce exactly one successful claim.
+  const simultaneousClaims = await Promise.all([
+    api.claimFreeQuiz("quiz-one"),
+    api.claimFreeQuiz("quiz-two")
+  ]);
+  assert.deepEqual(simultaneousClaims, [true, false]);
+  assert.equal(storage[FREE_QUIZ_KEY], "quiz-one");
 
-  // First installs should persist an ISO timestamp.
-  api.handleInstalled({ reason: "install" });
-  assert.equal(Number.isNaN(new Date(storage[LOCAL_INSTALL_KEY]).getTime()), false);
+  // The first identifier is reusable while every different quiz is rejected.
+  assert.equal(await api.claimFreeQuiz("quiz-one"), true);
+  assert.equal(await api.claimFreeQuiz("quiz-two"), false);
+  assert.equal(await api.claimFreeQuiz(""), false);
 });
 
 test("routes runtime messages to access, payment, login, and unsupported responses", async () => {
@@ -172,111 +177,87 @@ test("routes runtime messages to access, payment, login, and unsupported respons
   });
 });
 
-test("computes paid, trial, locked, and provider-failure access states", async () => {
-  // Paid users should remain unlocked even after the trial window.
-  const paidHarness = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: new Date(Date.now() - 2 * DAY_MS).toISOString() }
-  });
+test("computes paid, free, locked, and provider-failure access states", async () => {
+  // Paid users should remain unlocked without consuming a free quiz.
+  const paidHarness = loadBackgroundHarness();
   const paid = await paidHarness.api.getAccessState({
     async getUser() {
-      // Return an expired paid user to verify payment takes precedence.
+      // Return a paid user to verify payment takes precedence.
       return {
         paid: true,
-        installedAt: new Date(Date.now() - 2 * DAY_MS).toISOString(),
         email: "paid@example.com",
         paidAt: new Date().toISOString()
       };
     }
-  });
+  }, "paid-quiz");
   assert.equal(paid.status, "paid");
   assert.equal(paid.email, "paid@example.com");
+  assert.equal(paidHarness.storage[FREE_QUIZ_KEY], undefined);
 
-  // Recent unpaid installs should receive trial access.
-  const trialHarness = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: new Date(Date.now() - 60 * 60 * 1000).toISOString() }
-  });
-  const trial = await trialHarness.api.getAccessState({
+  // The first unpaid quiz should claim free access.
+  const freeHarness = loadBackgroundHarness();
+  const free = await freeHarness.api.getAccessState({
     async getUser() {
-      // Return an unpaid user within the trial window.
-      return {
-        paid: false,
-        installedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString()
-      };
+      // Return an unpaid user for the local quiz claim.
+      return { paid: false };
     }
-  });
-  assert.equal(trial.status, "trial");
-  assert.equal(trial.trialRemainingMs > 0, true);
+  }, "quiz-one");
+  assert.equal(free.status, "free");
+  assert.equal(freeHarness.storage[FREE_QUIZ_KEY], "quiz-one");
 
-  // Expired unpaid installs should be locked.
+  // A different unpaid quiz should be locked after the claim.
   const lockedHarness = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: new Date(Date.now() - 2 * DAY_MS).toISOString() }
+    storage: { [FREE_QUIZ_KEY]: "quiz-one" }
   });
   const locked = await lockedHarness.api.getAccessState({
     async getUser() {
-      // Return an unpaid user beyond the trial window.
-      return {
-        paid: false,
-        installedAt: new Date(Date.now() - 2 * DAY_MS).toISOString()
-      };
+      // Return an unpaid user after the free quiz was claimed.
+      return { paid: false };
     }
-  });
+  }, "quiz-two");
   assert.equal(locked.status, "locked");
 
-  // Provider failures allow active local trials but unknown-lock expired installs.
-  const failureTrialHarness = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: new Date(Date.now() - 60 * 60 * 1000).toISOString() }
-  });
-  const failureTrial = await failureTrialHarness.api.getAccessState({
+  // Provider failures allow the free quiz but unknown-lock every other quiz.
+  const failureFreeHarness = loadBackgroundHarness();
+  const failureFree = await failureFreeHarness.api.getAccessState({
     async getUser() {
       // Throw to simulate ExtensionPay being unavailable.
       throw new Error("provider down");
     }
-  });
-  assert.equal(failureTrial.status, "trial");
-  assert.equal(failureTrial.ok, false);
+  }, "quiz-one");
+  assert.equal(failureFree.status, "free");
+  assert.equal(failureFree.ok, false);
 
-  const failureExpiredHarness = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: new Date(Date.now() - 2 * DAY_MS).toISOString() }
+  const failureLockedHarness = loadBackgroundHarness({
+    storage: { [FREE_QUIZ_KEY]: "quiz-one" }
   });
-  const failureExpired = await failureExpiredHarness.api.getAccessState({
+  const failureLocked = await failureLockedHarness.api.getAccessState({
     async getUser() {
-      // Throw to simulate ExtensionPay being unavailable after trial expiry.
+      // Throw to simulate ExtensionPay being unavailable after free use.
       throw new Error("provider down");
     }
-  });
-  assert.equal(failureExpired.status, "unknown");
-  assert.equal(failureExpired.error, "provider down");
+  }, "quiz-two");
+  assert.equal(failureLocked.status, "unknown");
+  assert.equal(failureLocked.error, "provider down");
 });
 
-test("normalizes dates, trial math, and serializable responses", async () => {
+test("normalizes dates and creates serializable access responses", async () => {
   // Load the helper API for pure background utility functions.
-  const { api, storage } = loadBackgroundHarness();
-  const now = Date.now();
-  const oldDate = new Date(now - 5000);
-  const newDate = new Date(now);
+  const { api } = loadBackgroundHarness();
+  const newDate = new Date();
 
-  // Date helpers should reject invalid input and choose the earliest valid date.
+  // Date normalization should reject invalid input and preserve valid dates.
   assert.equal(api.normalizeDate("not a date"), null);
-  assert.equal(api.normalizeDate(oldDate).toISOString(), oldDate.toISOString());
-  assert.equal(api.getEarliestDate(newDate, oldDate).toISOString(), oldDate.toISOString());
-  assert.equal(api.getTrialRemainingMs(new Date(now - 2 * DAY_MS)), 0);
-
-  // Missing local install timestamps should be created once and then reused.
-  const installedAt = await api.ensureLocalInstalledAt();
-  assert.equal(storage[LOCAL_INSTALL_KEY], installedAt.toISOString());
-  const reusedInstalledAt = await api.ensureLocalInstalledAt();
-  assert.equal(reusedInstalledAt.toISOString(), installedAt.toISOString());
+  assert.equal(api.normalizeDate(newDate).toISOString(), newDate.toISOString());
 
   // Response helpers should produce serializable payloads for the content script.
-  const accessResponse = api.createAccessResponse("paid", oldDate, 123, {
+  const accessResponse = api.createAccessResponse("paid", {
     email: "user@example.com",
     paidAt: newDate
   });
   assert.deepEqual(toPlain(accessResponse), {
     ok: true,
     status: "paid",
-    installedAt: oldDate.toISOString(),
-    trialRemainingMs: 123,
     email: "user@example.com",
     paidAt: newDate.toISOString()
   });
@@ -331,39 +312,31 @@ test("rejects malformed runtime messages and serializes route failures", async (
 /**
  * Verifies ExtensionPay client creation and date helper edge cases.
  */
-test("creates provider clients and handles date edge cases", async () => {
+test("creates provider clients and rejects malformed free quiz ids", async () => {
   // Use a complete provider mock so client creation can be compared by identity.
   const { api, extpay } = loadBackgroundHarness();
   assert.equal(api.createExtPayClient(), extpay);
 
-  const onlyDate = new Date("2026-01-01T00:00:00.000Z");
-  assert.equal(api.getEarliestDate(null, onlyDate, new Date("invalid")).toISOString(), onlyDate.toISOString());
+  // Normalize supported date values and reject missing quiz identifiers.
   assert.equal(api.normalizeDate("2026-02-03T04:05:06.000Z").toISOString(), "2026-02-03T04:05:06.000Z");
   assert.equal(api.normalizeDate(undefined), null);
-  assert.equal(api.getTrialRemainingMs(new Date(Date.now() + 1000)) > DAY_MS, true);
+  assert.equal(await api.claimFreeQuiz(null), false);
+  assert.equal(await api.claimFreeQuiz("   "), false);
 });
 
 /**
- * Verifies invalid saved install dates are replaced and response fallbacks serialize.
+ * Verifies response fallbacks serialize without provider account details.
  */
-test("replaces invalid install dates and normalizes response fallbacks", async () => {
-  // Seed an invalid date so ensureLocalInstalledAt must replace it.
-  const { api, storage } = loadBackgroundHarness({
-    storage: { [LOCAL_INSTALL_KEY]: "invalid" }
-  });
-  const installedAt = await api.ensureLocalInstalledAt();
-  assert.equal(Number.isNaN(installedAt.getTime()), false);
-  assert.equal(storage[LOCAL_INSTALL_KEY], installedAt.toISOString());
-
-  const response = api.createAccessResponse("trial", installedAt, 100, {
+test("normalizes access response fallbacks", async () => {
+  // Build an errored free response with empty and invalid account fields.
+  const { api } = loadBackgroundHarness();
+  const response = api.createAccessResponse("free", {
     email: "",
     paidAt: "invalid"
   }, "provider warning");
   assert.deepEqual(toPlain(response), {
     ok: false,
-    status: "trial",
-    installedAt: installedAt.toISOString(),
-    trialRemainingMs: 100,
+    status: "free",
     email: null,
     paidAt: null,
     error: "provider warning"

@@ -1,7 +1,7 @@
 globalThis.McqQuiz = globalThis.McqQuiz || {};
 
 /**
- * Creates trial and payment-access helpers for the content script.
+ * Creates free-quiz and payment-access helpers for the content script.
  *
  * @param {{EXTENSION_PREFIX: string, ACCESS_CACHE_DURATION_MS: number}} config - Shared access configuration.
  * @returns {Record<string, Function>} Access and paywall service.
@@ -10,7 +10,7 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
   // Keep access cache state private to the paywall service.
   const services = globalThis.McqQuiz.services;
   const { EXTENSION_PREFIX, ACCESS_CACHE_DURATION_MS } = config;
-  let accessStateCache = null;
+  const accessStateCache = new Map();
   /**
    * Handles payment, login, and retry actions from the paywall panel.
    *
@@ -58,48 +58,48 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
   }
 
   /**
-   * Reads the current paid/trial/locked state from the background worker.
+   * Reads the current paid/free/locked state from the background worker.
    *
    * @param {boolean} shouldBypassCache - Whether to force a provider recheck.
-   * @returns {Promise<{ok?: boolean, status?: string, trialRemainingMs?: number, error?: string}>} Access state.
+   * @param {string} quizId - Stable identifier for the quiz requesting access.
+   * @returns {Promise<{ok?: boolean, status?: string, error?: string}>} Access state.
    */
-  async function readAccessState(shouldBypassCache) {
-    // Reuse recent status checks so multiple visible quizzes do not spam the provider.
-    if (!shouldBypassCache && accessStateCache && Date.now() - accessStateCache.createdAt < ACCESS_CACHE_DURATION_MS) {
-      return accessStateCache.value;
+  async function readAccessState(shouldBypassCache, quizId) {
+    // Reuse recent status checks only for the same quiz identifier.
+    const cachedState = accessStateCache.get(quizId);
+    if (!shouldBypassCache && cachedState && Date.now() - cachedState.createdAt < ACCESS_CACHE_DURATION_MS) {
+      return cachedState.value;
     }
 
     try {
       // Ask the background worker because ExtensionPay owns the MV3 service worker.
-      const response = await sendPaywallMessage("getAccessState");
+      const response = await sendPaywallMessage("getAccessState", { quizId });
       const accessState = response || {
         ok: false,
-        status: "unknown",
-        trialRemainingMs: 0
+        status: "unknown"
       };
 
-      // Cache the normalized response for nearby assistant outputs.
-      accessStateCache = {
+      // Cache the normalized response under this quiz only.
+      accessStateCache.set(quizId, {
         createdAt: Date.now(),
         value: accessState
-      };
+      });
 
       // Return the provider-backed access state.
       return accessState;
     } catch (error) {
-      // Surface background failures as an unknown state so expired trials stay gated.
+      // Surface background failures as unknown so quizzes beyond the free one stay gated.
       const accessState = {
         ok: false,
         status: "unknown",
-        trialRemainingMs: 0,
         error: getErrorMessage(error)
       };
 
-      // Cache the failure briefly to avoid repeated runtime errors.
-      accessStateCache = {
+      // Cache the failure briefly for this quiz to avoid repeated runtime errors.
+      accessStateCache.set(quizId, {
         createdAt: Date.now(),
         value: accessState
-      };
+      });
 
       // Return the safe locked/unknown state.
       return accessState;
@@ -110,9 +110,10 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
    * Sends one paywall message to the extension background worker.
    *
    * @param {string} action - Paywall action without the extension prefix.
+   * @param {Record<string, unknown>} [payload] - Additional serializable message fields.
    * @returns {Promise<Record<string, any>>} Background response.
    */
-  function sendPaywallMessage(action) {
+  function sendPaywallMessage(action, payload = {}) {
     // Reject immediately when the runtime API is unavailable.
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       return Promise.reject(new Error("Extension runtime is unavailable."));
@@ -122,6 +123,7 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         {
+          ...payload,
           type: `${EXTENSION_PREFIX}:${action}`
         },
         (response) => {
@@ -146,16 +148,16 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
    * @returns {boolean} True when the paywall should be shown.
    */
   function isAccessLocked(accessState) {
-    // Only paid and active-trial users can reach the quiz UI.
-    return accessState?.status !== "paid" && accessState?.status !== "trial";
+    // Only paid users and the single claimed free quiz can reach the quiz UI.
+    return accessState?.status !== "paid" && accessState?.status !== "free";
   }
 
   /**
    * Clears the short-lived access-state cache.
    */
   function clearAccessStateCache() {
-    // Force the next access check to call the background provider flow.
-    accessStateCache = null;
+    // Force the next access check for every quiz to call the background flow.
+    accessStateCache.clear();
   }
 
   /**
@@ -172,26 +174,6 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
 
     // Write plain text so provider errors cannot inject markup.
     status.textContent = message;
-  }
-
-  /**
-   * Formats remaining trial time for compact user-facing copy.
-   *
-   * @param {number} remainingMs - Remaining trial time in milliseconds.
-   * @returns {string} Human-readable remaining time.
-   */
-  function formatTrialRemaining(remainingMs) {
-    // Round up so users do not see zero until the trial has actually expired.
-    const minutes = Math.max(1, Math.ceil(remainingMs / 60000));
-
-    // Prefer hours for most of the 24-hour trial window.
-    if (minutes >= 60) {
-      const hours = Math.ceil(minutes / 60);
-      return `${hours} ${hours === 1 ? "hour" : "hours"}`;
-    }
-
-    // Use minutes near the end of the trial.
-    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   }
 
   /**
@@ -218,7 +200,6 @@ globalThis.McqQuiz.createAccess = function createAccess(config) {
     isAccessLocked,
     clearAccessStateCache,
     setPaywallStatus,
-    formatTrialRemaining,
     getErrorMessage
   };
 };
